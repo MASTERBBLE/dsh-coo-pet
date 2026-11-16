@@ -10,6 +10,17 @@
   "bugs": {
     "url": "https://github.com/MASTERBBLE/dsh-coo-pet/issues"
   },
+  "homepage": "https://github.com/MASTERBBLE/dsh-coo-pet#readme",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "desktop-pet",
+    "coo-pet",
+    "deepseek-harness"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5"
   },

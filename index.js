@@ -40,38 +40,38 @@ const PET_ROOT = fileURLToPath(new URL('./assets/pet/', import.meta.url))
 
 const DEFAULTS = {
   petName: '你的鱼',
-  menuOrder: 'open,input,restart,reset,stay,free,duty,actions,look,outfit,none',
-  menuOrderV2: false,
-  menuOrderV3: false,
-  menuOrderV4: false,
+  menuOrder: 'open,input,stay,free,duty,actions,look,outfit,clone,none,reset,resetAll,restart',
+  menuOrderV2: true,
+  menuOrderV3: true,
+  menuOrderV4: true,
   attachSession: '',
   actOff: '',
   look: 'deepseek',
-  outfit: 'maid',
+  outfit: 'crew',
   size: 190,
   opacity: 1,
-  speed: 1,
+  speed: 1.2,
   wander: false,
   answerBubble: true,
   idleBubble: true,
   greet: true,
-  marginBottom: 150,
+  marginBottom: 0,
   voice: true,
   voiceMode: 'babble',
   voiceName: '',
   voiceRate: 1.05,
-  voicePitch: 1.15,
-  hotkey: 'Alt+V',
+  voicePitch: 0.9,
+  hotkey: 'mouse5',
   hotkeyOn: true,
   sfx: true,
   display: 'desktop',
   idleLines: '',
   idleEvery: 20,
-  idleUnit: 'min',
-  actIcons: false,
-  actSit: false,
-  carryEvery: 0,
-  carryUnit: 'min',
+  idleUnit: 'sec',
+  actIcons: true,
+  actSit: true,
+  carryEvery: 5,
+  carryUnit: 'sec',
 }
 
 // 内置鲸鱼娘形象：8 个配色 × 3 套衣服
@@ -100,7 +100,7 @@ export const Config = z.object({
     .description('插入指定会话：填 Session ID 后，桌宠对话框和语音输入都发进这个会话，回答回流到气泡并朗读；留空跟当前会话'),
   menuOrder: z
     .string()
-    .default('open,input,voice,close,web,desktop,both,none')
+    .default('open,input,stay,free,duty,actions,look,outfit,clone,none,reset,resetAll,restart')
     .description('右键下拉列表的顺序（逗号分隔：open 打开DSH / input 输入 / restart 重启DSH / reset 图标复位 / stay 原地待着 / free 自由活动 / duty 安静模式 / ground 回地面 / actions 来一个 / look 换形象 / outfit 换衣服 / none 藏起来）'),
   actOff: z.string().default('').description('禁止她自动做的动作（逗号分隔：look,sit,sleep,dance,dizzy）'),
   look: z
@@ -114,20 +114,20 @@ export const Config = z.object({
       z.const('kimi'),
       z.const('minimax'),
     ])
-    .default('harness')
+    .default('deepseek')
     .description('桌宠形象：鲸鱼娘配色'),
   outfit: z
     .union([z.const('maid'), z.const('cape'), z.const('crew')])
-    .default('maid')
+    .default('crew')
     .description('鲸鱼娘的衣服'),
   size: z.number().min(64).max(420).step(2).default(190).description('桌宠高度（像素）'),
   opacity: z.number().min(0.2).max(1).step(0.05).default(1).description('不透明度'),
-  speed: z.number().min(0.2).max(3).step(0.1).default(1).description('溜达速度倍率'),
+  speed: z.number().min(0.2).max(3).step(0.1).default(1.2).description('溜达速度倍率'),
   wander: z.boolean().default(false).description('自己来回溜达'),
   answerBubble: z.boolean().default(true).description('显示回答气泡（插入会话的回答）'),
   idleBubble: z.boolean().default(true).description('显示碎碎念气泡（闲来自言自语）'),
   greet: z.boolean().default(true).description('闲着的时候偶尔自言自语'),
-  marginBottom: z.number().min(0).max(400).step(1).default(150).description('离屏幕底部的距离'),
+  marginBottom: z.number().min(0).max(400).step(1).default(0).description('离屏幕底部的距离'),
   voice: z.boolean().default(true).description('说话时出声（用系统语音）'),
   voiceMode: z
     .union([z.const('babble'), z.const('tts')])
@@ -135,20 +135,20 @@ export const Config = z.object({
     .description('声音：babble 是内置咿呀音节声，tts 是系统朗读'),
   voiceName: z.string().default('').description('音色（仅 tts 用）：系统语音名，留空自动挑一个中文女声'),
   voiceRate: z.number().min(0.5).max(2).step(0.05).default(1.05).description('语速'),
-  voicePitch: z.number().min(0.5).max(2).step(0.05).default(1.15).description('音调（越高越像小孩）'),
-  hotkey: z.string().default('Alt+V').description('语音输入快捷键（Alt+V / Ctrl+Shift+M …）'),
+  voicePitch: z.number().min(0.5).max(2).step(0.05).default(0.9).description('音调（越高越像小孩）'),
+  hotkey: z.string().default('mouse5').description('语音输入快捷键（Alt+V / Ctrl+Shift+M / mouse5 鼠标侧键 …）'),
   hotkeyOn: z.boolean().default(true).description('启用语音快捷键'),
   sfx: z.boolean().default(true).description('点她、跳起来时的音效'),
   display: z.union([z.const('desktop'), z.const('none')]).default('desktop').description('桌面显示 / 隐藏（网页浮层已下线）'),
   idleLines: z.string().default('').description('碎碎念内容，一行一句（全自定义，留空就不说）'),
   idleEvery: z.number().min(1).max(999).step(1).default(20).description('隔多久说一句碎碎念'),
-  idleUnit: z.union([z.const('sec'), z.const('min'), z.const('hour')]).default('min').description('碎碎念时间单位：秒 / 分钟 / 小时'),
-  actIcons: z.boolean().default(false).description('拖动图标：她闲下来会把桌面图标挪一挪（仅桌面模式）'),
-  actSit: z.boolean().default(false).description('随便坐：她闲下来会坐在桌面图标或窗口边沿上'),
-  carryEvery: z.number().default(0).description('两次搬图标的最小间隔；0 = 不限制'),
+  idleUnit: z.union([z.const('sec'), z.const('min'), z.const('hour')]).default('sec').description('碎碎念时间单位：秒 / 分钟 / 小时'),
+  actIcons: z.boolean().default(true).description('拖动图标：她闲下来会把桌面图标挪一挪（仅桌面模式）'),
+  actSit: z.boolean().default(true).description('随便坐：她闲下来会坐在桌面图标或窗口边沿上'),
+  carryEvery: z.number().default(5).description('两次搬图标的最小间隔；0 = 不限制'),
   carryUnit: z
     .union([z.const('sec'), z.const('min')])
-    .default('min')
+    .default('sec')
     .description('搬运间隔的单位：sec 秒 / min 分钟'),
 })
 

@@ -4,6 +4,14 @@
 
 > 基于开源桌面宠物 **大肥鱼桌宠 [Pal-AI-Lab/Coopanion](https://github.com/Pal-AI-Lab/Coopanion)**（桌面版）修改而来，遵循 **AGPL-3.0-or-later**。鲸鱼贴图随仓库分发已获 Pal-AI-Lab 许可（B 站联系取得，详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)）。改动以「桌面化」为核心：全屏透明 Electron 窗、PowerShell 桌面探针、桌面图标搬运与复位、系统级语音快捷键、影分身之术等。
 
+## 截图
+
+| 设置页 · 形象与换装 | 设置页 · 会话与语音 |
+|:---:|:---:|
+| ![形象与换装](docs/screenshot-appearance.png) | ![会话与语音](docs/screenshot-voice.png) |
+| ![动作与搬运](docs/screenshot-actions.png) | ![右键菜单与碎碎念](docs/screenshot-menu.png) |
+| 设置页 · 动作与搬运 | 设置页 · 右键菜单与碎碎念 |
+
 ## 功能
 
 ### 陪伴与动作
@@ -12,7 +20,7 @@
 - **被冷落的小情绪**：太久没人理她会蔫 5 分钟
 - **安静模式**：手动开关，开启后不再打扰（不漫步、不搬图标）
 - **快捷指令**：对话框输入「打开XX」她跑去图标旁戳一下启动；「安静模式」「回地面」「番茄钟」等口令即用
-- **换形象 / 换衣服**：8 套形象配色 × 女仆装 / 斗篷 / 水手服，右键即换
+- **换形象 / 换衣服**：8 套形象配色 × 女仆装 / 斗篷 / 制服，右键即换
 
 ### 影分身
 右键她 →「影分身」：
@@ -44,7 +52,7 @@
 ## 安装
 
 1. 前提：本机已安装并运行 DSH（DeepSeek Harness），且 DSH 环境里有 electron（用于承载桌宠窗口）
-2. 在 DSH 里添加插件，填入本仓库地址（`dsh plugin --profile web add github:MASTERBBLE/dsh-coo-pet`），或把整个 `coo-pet` 文件夹放进 DSH 的工作区（例如 `DSH工作区/whale-work/`）
+2. 在 DSH 里添加插件，填入本仓库地址（`dsh plugin add github:MASTERBBLE/dsh-coo-pet`；如果你开了多个 DSH 环境，再加 `--profile 环境名` 指定装到哪个），或把整个 `coo-pet` 文件夹放进 DSH 的工作区（例如 `DSH工作区/whale-work/`）
 3. 重启 DSH，桌宠出现；托盘/菜单可进入设置页
 
 > 鲸鱼贴图已随仓库分发（已获原作者许可，见 THIRD_PARTY_NOTICES.md），装完即用，无需额外步骤。
@@ -71,6 +79,7 @@
 coo-pet/
 ├── index.js          # DSH 插件入口：HTTP 服务、气泡回合配对、桌宠进程管理
 ├── client.js         # 设置页（独立 web 页面）
+├── docs/             # README 截图
 └── assets/
     ├── desk-main.cjs # 桌宠 Electron 主进程：探针调用、图标快照历史
     ├── desk-probe.ps1# PowerShell 探针：枚举窗口 / 图标位置 / 移动 / 复位
