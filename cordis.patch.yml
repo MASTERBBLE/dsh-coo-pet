@@ -1,0 +1,3 @@
+- insert:
+    - id: coo-pet
+      name: '@masterbble/dsh-coo-pet'

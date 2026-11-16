@@ -1,0 +1,2734 @@
+<!doctype html>
+<!--
+  coo-pet — desktop pet plugin for DeepSeek Harness
+  Copyright (C) 2026 Masterbble
+  Based on the desktop pet Coopanion by Pal-AI-Lab: https://github.com/Pal-AI-Lab/Coopanion
+  SPDX-License-Identifier: AGPL-3.0-or-later (see LICENSE; third-party notices in THIRD_PARTY_NOTICES.md)
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Coo</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+        font: 13px/1.6 system-ui, 'Microsoft YaHei', sans-serif;
+      }
+      #stage {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        transform-origin: 0 0;
+        will-change: transform;
+      }
+      #stage svg.kit {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+      #bubble {
+        position: fixed;
+        max-width: 260px;
+        padding: 7px 11px;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.95);
+        color: #1d2333;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+        opacity: 0;
+        transform: translate(-50%, -100%) translateY(-6px);
+        transition: opacity 0.16s ease;
+        pointer-events: none;
+        white-space: pre-wrap;
+      }
+      #bubble.on {
+        opacity: 1;
+      }
+      #bubble::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        bottom: -6px;
+        width: 10px;
+        height: 10px;
+        margin-left: -5px;
+        background: rgba(255, 255, 255, 0.95);
+        transform: rotate(45deg);
+      }
+      .menu {
+        position: fixed;
+        min-width: 150px;
+        padding: 5px;
+        border-radius: 10px;
+        background: rgba(28, 32, 44, 0.96);
+        color: #eef2ff;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+        font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+        font-size: 13px;
+        z-index: 30;
+      }
+      .menu-item {
+        padding: 6px 10px;
+        border-radius: 7px;
+        cursor: pointer;
+        white-space: nowrap;
+        font-size: 13px;
+      }
+      .menu-item:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .menu-row {
+        display: flex;
+        align-items: center;
+      }
+      .menu-row .menu-item {
+        flex: 1;
+      }
+      .menu-del {
+        border: 0;
+        background: transparent;
+        color: #8b93a7;
+        font-size: 13px;
+        line-height: 1;
+        padding: 4px 7px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .menu-del:hover {
+        background: rgba(255, 90, 90, 0.22);
+        color: #ff9d9d;
+      }
+      .menu-head {
+        padding: 4px 10px 6px;
+        font-size: 12px;
+        opacity: 0.6;
+      }
+      #chat {
+        position: fixed;
+        width: 268px;
+        padding: 8px;
+        border-radius: 12px;
+        background: rgba(28, 32, 44, 0.97);
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+        z-index: 40;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      #chat input {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 8px;
+        border: 0;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        outline: none;
+        font-size: 12px;
+      }
+      #chat button {
+        padding: 6px 9px;
+        border: 0;
+        border-radius: 8px;
+        background: #4d6bfe;
+        color: #fff;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      #chat button.ghost {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="bubble"></div>
+    <div id="chat" class="hidden">
+      <input id="chat-text" placeholder="跟她说一句…" />
+      <button id="chat-send">发</button>
+      <button id="chat-close" class="ghost">×</button>
+    </div>
+    <script type="module">
+      const desk = window.cooDesk || { hit() {}, close() {} }
+      const report = (status, payload) => {
+        try {
+          fetch('/dsh-coo-pet/report', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ status, ...(payload || {}) }),
+          }).catch(() => {})
+        } catch {
+          /* 无所谓 */
+        }
+      }
+      window.addEventListener('error', (event) => report('desk-error', { message: String(event.message || event.error) }))
+      window.addEventListener('unhandledrejection', (event) =>
+        report('desk-error', { message: String((event.reason && event.reason.message) || event.reason) })
+      )
+
+      const ROOT = '/dsh-coo-pet/pet'
+      const stage = document.getElementById('stage')
+      // kit / pack 在建她的 try 块里才 import（块级作用域），分身（全真实例）也要用，
+      // 所以用模块级变量中转（建好前是 null，分身代码先判空）
+      let kit = null
+      let pack = null
+      // buildCloneBody(root, at)：给分身造一只完整的本体实例（模型/贴图参数在建她时
+      // 才拿得到，所以这里只留个壳，boot 里赋值）。at = { x, y, facing }
+      let buildCloneBody = null
+      const bubbleEl = document.getElementById('bubble')
+      const chatEl = document.getElementById('chat')
+      const chatText = document.getElementById('chat-text')
+
+      let bubbleTimer = 0
+      let bubbleAnchor = { x: 0, y: 0 }
+
+      // 安静模式（纯手动开关，右键菜单「安静模式」）：全静音 + 不溜达不碎碎念不搬图标不乱坐；记录存 localStorage
+      let offDuty = false
+      try { offDuty = localStorage.getItem('coo-offduty') === '1' } catch { /* 新环境没有记录 */ }
+      // 平时的小盹儿：白天闲着也会打个盹（作息感保留），一戳/一敲键盘就醒
+      let napping = false
+      let napTimer = 0
+      // 语音录制中（快捷键/鼠标键按着）：原地站住别动，输入框里正在填她听到的话
+      let voiceHeld = false
+
+      const say = (text) => {
+        if (!text) return
+        if (offDuty) return
+        bubbleEl.textContent = text
+        bubbleEl.classList.add('on')
+        // 一开口就站住：不开新步子，正在走的路也立刻打断——
+        // 但她身上有正事在办时（去开软件/搬图标/去坐下）例外，别把任务路打断
+        try {
+          pet?.set?.({ roam: 'off' })
+          if (!launchWalk && !iconWalk && !seatWalk) pet?.stopWalk?.()
+        } catch {
+          /* ignore */
+        }
+        window.clearTimeout(bubbleTimer)
+        bubbleTimer = window.setTimeout(() => {
+          bubbleEl.classList.remove('on')
+          // 菜单/输入框开着时它们自己管 roam，别插手
+          if (!menuEl && (!chatEl || chatEl.classList.contains('hidden'))) applyRoam()
+        }, 4600)
+        speak(text)
+      }
+      /* 碎碎念专用口：受「碎碎念气泡」开关管（回答气泡、点她后的操作反馈不受它管）。
+         之前开关只拦了闲坐碎碎念那一处，睡觉晚安/孤独嗔怪/坐下感慨这些自言自语照说不误——
+         开关关了嘴还在动，这就是「开关和行为不匹配」的根源 */
+      const chatterSay = (text) => {
+        if (!text) return
+        if ((prefs && prefs.idleBubble) === false) return
+        say(text)
+      }
+
+      /* 朗读：用系统语音；咿呀模式就把音调拉高、语速加快，听着像小动物 */
+      let voicesCache = []
+      const warmVoices = () => {
+        try {
+          const synth = window.speechSynthesis
+          if (!synth) return
+          const got = synth.getVoices()
+          if (got && got.length) voicesCache = got
+        } catch {
+          /* ignore */
+        }
+      }
+      warmVoices()
+      try {
+        window.speechSynthesis?.addEventListener?.('voiceschanged', warmVoices)
+      } catch {
+        /* ignore */
+      }
+      /* 咿呀声：按字取片段现场拼 */
+      const babble = {
+        ready: false,
+        failed: false,
+        trying: false,
+        attempts: 0,
+        retryAt: 0,
+        ctx: null,
+        buffer: null,
+        units: {},
+        keys: [],
+        pending: '',
+      }
+      const BABBLE_TRIES = 4
+      const BABBLE_BACKOFF = 5000
+      const hashChar = (ch) => {
+        let n = 0
+        for (let i = 0; i < ch.length; i += 1) n = (n * 31 + ch.charCodeAt(i)) % 100000
+        return n
+      }
+      const babbleCtx = () => {
+        if (!babble.ctx) {
+          const C = window.AudioContext || window.webkitAudioContext
+          if (!C) return null
+          babble.ctx = new C()
+        }
+        if (babble.ctx.state === 'suspended') babble.ctx.resume?.().catch(() => {})
+        return babble.ctx
+      }
+      const loadBabble = async () => {
+        if (babble.ready || babble.trying || babble.failed) return babble.ready
+        // 正在退避就先不理，等下一次碎碎念或定时器再来
+        if (babble.retryAt && Date.now() < babble.retryAt) return false
+        babble.trying = true
+        try {
+          const [map, raw] = await Promise.all([
+            fetch('/dsh-coo-pet/pet/asset?p=' + encodeURIComponent('speech/zh.json')).then((r) => r.json()),
+            fetch('/dsh-coo-pet/pet/asset?p=' + encodeURIComponent('speech/zh.ogg')).then((r) => r.arrayBuffer()),
+          ])
+          const ctx = babbleCtx()
+          babble.buffer = await ctx.decodeAudioData(raw)
+          babble.units = map.units ?? {}
+          babble.keys = Object.keys(babble.units)
+          babble.ready = babble.keys.length > 0
+          report('desk-voice', { mode: 'babble', units: babble.keys.length, seconds: Math.round(babble.buffer.duration) })
+          if (babble.ready && babble.pending) {
+            const line = babble.pending
+            babble.pending = ''
+            babbleSay(line)
+          }
+        } catch (error) {
+          babble.attempts += 1
+          babble.retryAt = Date.now() + BABBLE_BACKOFF
+          if (babble.attempts >= BABBLE_TRIES) babble.failed = true
+          report('desk-voice-error', {
+            message: String((error && error.message) || error),
+            attempts: babble.attempts,
+            willRetry: !babble.failed,
+          })
+        }
+        babble.trying = false
+        return babble.ready
+      }
+      const babbleSay = (text) => {
+        if (!babble.ready) {
+          babble.pending = String(text ?? '')
+          loadBabble()
+          return
+        }
+        const ctx = babbleCtx()
+        if (!ctx) return
+        const rate = Number(prefs.voiceRate) > 0 ? Math.min(2, Number(prefs.voiceRate)) : 1
+        const pitch = Number(prefs.voicePitch) > 0 ? Math.min(2, Number(prefs.voicePitch)) : 1
+        const chars = [...String(text ?? '').replace(/\{[a-z]+\}/gi, '')].filter((ch) => !/\s/.test(ch)).slice(0, 60)
+        let at = ctx.currentTime + 0.02
+        const base = 1 / Math.max(0.5, pitch)
+        for (const ch of chars) {
+          const key = babble.keys[hashChar(ch) % babble.keys.length]
+          const unit = babble.units[key]
+          if (!unit) continue
+          const src = ctx.createBufferSource()
+          src.buffer = babble.buffer
+          src.playbackRate.value = base * (0.94 + (hashChar(ch + 'x') % 13) / 100)
+          const gain = ctx.createGain()
+          gain.gain.value = 0.42
+          src.connect(gain).connect(ctx.destination)
+          src.start(at, unit[0], Math.min(0.16, unit[1]))
+          at += unit[1] / Math.max(0.6, rate)
+        }
+      }
+
+      const speak = (text) => {
+        try {
+          if (offDuty || prefs.voice === false) return
+          // 咿呀模式优先走音库；音库没就绪就排队，绝不退回朗读
+          if ((prefs.voiceMode ?? 'babble') === 'babble') {
+            babbleSay(text)
+            return
+          }
+          if (!('speechSynthesis' in window)) return
+          const synth = window.speechSynthesis
+          if (!voicesCache.length) warmVoices()
+          const utter = new SpeechSynthesisUtterance(String(text).replace(/\{[a-z]+\}/gi, ''))
+          const wantName = String(prefs.voiceName || '')
+          let voice = wantName ? voicesCache.find((v) => v.name === wantName) : null
+          if (!voice) voice = voicesCache.find((v) => /^(zh|cmn)/i.test(v.lang)) || voicesCache[0]
+          if (voice) utter.voice = voice
+          utter.lang = (voice && voice.lang) || 'zh-CN'
+          const rate = Number(prefs.voiceRate) > 0 ? Number(prefs.voiceRate) : 1.05
+          const pitch = Number(prefs.voicePitch) > 0 ? Number(prefs.voicePitch) : 1.15
+          utter.rate = rate
+          utter.pitch = pitch
+          synth.cancel()
+          synth.speak(utter)
+        } catch {
+          /* 没声音也行 */
+        }
+      }
+
+      /* 回答朗读：插入会话的回答专用——气泡停久一点，声音完全跟随设置（咿呀就咿呀，tts 就朗读） */
+      const answerSay = (text) => {
+        if (!text) return
+        // 回答到了：想完啦
+        thinkingNow = false
+        try { pet?.set?.({ thinking: false }) } catch { /* ignore */ }
+        // 回答气泡一出就站住：不开新步子，正在走的路也立刻打断（正事在办时除外）
+        try {
+          pet?.set?.({ roam: 'off' })
+          if (!launchWalk && !iconWalk && !seatWalk) pet?.stopWalk?.()
+        } catch {
+          /* ignore */
+        }
+        window.clearTimeout(thinkTimer)
+        if (prefs.answerBubble !== false) {
+          bubbleEl.textContent = text
+          bubbleEl.classList.add('on')
+          window.clearTimeout(bubbleTimer)
+          bubbleTimer = window.setTimeout(() => {
+            bubbleEl.classList.remove('on')
+            if (!menuEl && (!chatEl || chatEl.classList.contains('hidden'))) applyRoam()
+          }, 12000)
+        }
+        speak(text)
+      }
+
+      const placeBubble = () => {
+        bubbleEl.style.left = Math.round(bubbleAnchor.x) + 'px'
+        bubbleEl.style.top = Math.round(bubbleAnchor.y) + 'px'
+      }
+
+      /* ---------- 音效（现场合成，共 34 个） ---------- */
+      let actx = null
+      let sfxMaster = null
+      let noiseBuf = null
+      const ac = () => {
+        if (!actx) {
+          const C = window.AudioContext || window.webkitAudioContext
+          if (!C) return null
+          actx = new C()
+          sfxMaster = actx.createGain()
+          sfxMaster.gain.value = 0.55
+          const comp = actx.createDynamicsCompressor()
+          sfxMaster.connect(comp)
+          comp.connect(actx.destination)
+        }
+        if (actx.state === 'suspended') actx.resume?.().catch(() => {})
+        return actx
+      }
+      const R = (a, b) => a + Math.random() * (b - a)
+      const tone = ({ type = 'sine', f0 = 440, f1 = f0, dur = 0.1, vol = 0.2, at = 0, attack = 0.005, vib = 0, vibRate = 0, filter = 0 }) => {
+        const ctx = ac()
+        if (!ctx) return
+        const t0 = ctx.currentTime + at
+        const osc = ctx.createOscillator()
+        const amp = ctx.createGain()
+        osc.type = type
+        osc.frequency.setValueAtTime(f0, t0)
+        osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t0 + dur)
+        if (vib) {
+          const l = ctx.createOscillator()
+          const lg = ctx.createGain()
+          l.frequency.value = vibRate
+          lg.gain.value = vib
+          l.connect(lg)
+          lg.connect(osc.frequency)
+          l.start(t0)
+          l.stop(t0 + dur + 0.05)
+        }
+        amp.gain.setValueAtTime(0.0001, t0)
+        amp.gain.exponentialRampToValueAtTime(vol, t0 + attack)
+        amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur)
+        let node = osc
+        if (filter) {
+          const bq = ctx.createBiquadFilter()
+          bq.type = 'lowpass'
+          bq.frequency.value = filter
+          osc.connect(bq)
+          node = bq
+        }
+        node.connect(amp)
+        amp.connect(sfxMaster)
+        osc.start(t0)
+        osc.stop(t0 + dur + 0.03)
+      }
+      const noise = ({ type = 'bandpass', f0 = 1000, f1 = f0, q = 1, dur = 0.2, vol = 0.15, at = 0, attack = 0.01 }) => {
+        const ctx = ac()
+        if (!ctx) return
+        if (!noiseBuf) {
+          noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
+          const d = noiseBuf.getChannelData(0)
+          for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+        }
+        const t0 = ctx.currentTime + at
+        const src = ctx.createBufferSource()
+        const bq = ctx.createBiquadFilter()
+        const amp = ctx.createGain()
+        src.buffer = noiseBuf
+        bq.type = type
+        bq.Q.value = q
+        bq.frequency.setValueAtTime(f0, t0)
+        bq.frequency.exponentialRampToValueAtTime(f1, t0 + dur)
+        amp.gain.setValueAtTime(0.0001, t0)
+        amp.gain.exponentialRampToValueAtTime(vol, t0 + attack)
+        amp.gain.exponentialRampToValueAtTime(0.0001, t0 + dur)
+        src.connect(bq)
+        bq.connect(amp)
+        amp.connect(sfxMaster)
+        src.start(t0, Math.random() * 0.5)
+        src.stop(t0 + dur + 0.03)
+      }
+      const tones = {
+        step(run, i) {
+          const k = run ? 1.25 : 1
+          tone({ f0: (i ? 520 : 440) * k, f1: (i ? 380 : 330) * k, dur: 0.06, vol: run ? 0.07 : 0.05 })
+          if (run) noise({ f0: 2500, q: 0.8, dur: 0.05, vol: 0.03 })
+        },
+        skid() {
+          noise({ type: 'highpass', f0: 1800, f1: 900, dur: 0.22, vol: 0.08 })
+        },
+        jump() {
+          tone({ type: 'triangle', f0: 200, f1: 720, dur: 0.24, vol: 0.22, vib: 40, vibRate: 22 })
+        },
+        land(hard) {
+          tone({ f0: hard ? 160 : 190, f1: 48, dur: hard ? 0.28 : 0.16, vol: hard ? 0.4 : 0.25 })
+          noise({ type: 'lowpass', f0: hard ? 700 : 500, f1: 120, dur: 0.12, vol: hard ? 0.25 : 0.12 })
+          if (hard) tone({ type: 'square', f0: 420, f1: 300, dur: 0.08, vol: 0.06, at: 0.02, filter: 1600 })
+        },
+        grab() {
+          tone({ type: 'triangle', f0: 680, f1: 1500, dur: 0.14, vol: 0.18, vib: 60, vibRate: 30 })
+        },
+        squeak() {
+          tone({ type: 'triangle', f0: R(900, 1200), f1: R(1300, 1700), dur: 0.09, vol: 0.08, vib: 40, vibRate: 35 })
+        },
+        whoosh() {
+          noise({ f0: 300, f1: 2400, q: 1.4, dur: 0.38, vol: 0.22, attack: 0.08 })
+        },
+        chirps() {
+          for (let i = 0; i < 3; i++) tone({ f0: 2300 + i * 120, f1: 3200, dur: 0.06, vol: 0.06, at: i * 0.11 })
+        },
+        shake() {
+          for (let i = 0; i < 5; i++) tone({ type: 'square', f0: 180, f1: 160, dur: 0.05, vol: 0.05, at: i * 0.06, filter: 900 })
+        },
+        hmm() {
+          tone({ type: 'triangle', f0: 330, f1: 360, dur: 0.12, vol: 0.08 })
+          tone({ type: 'triangle', f0: 392, f1: 470, dur: 0.16, vol: 0.08, at: 0.14 })
+        },
+        yawn() {
+          tone({ type: 'triangle', f0: 520, f1: 240, dur: 1, vol: 0.1, vib: 12, vibRate: 5, filter: 1500, attack: 0.15 })
+        },
+        snore() {
+          noise({ type: 'lowpass', f0: 250, f1: 700, dur: 0.7, vol: 0.09, attack: 0.35 })
+        },
+        purr() {
+          tone({ type: 'sawtooth', f0: 62, f1: 58, dur: 0.9, vol: 0.08, vib: 6, vibRate: 24, filter: 320, attack: 0.1 })
+        },
+        poke() {
+          tone({ f0: 320, f1: 200, dur: 0.09, vol: 0.16 })
+        },
+        shiver() {
+          for (let i = 0; i < 8; i++) tone({ type: 'square', f0: 900, f1: 820, dur: 0.03, vol: 0.035, at: i * 0.07, filter: 2400 })
+        },
+        look() {
+          tones.hmm()
+        },
+        dance() {
+          ;[523, 659, 784, 659, 880].forEach((fr, i) => tone({ type: 'triangle', f0: fr, dur: 0.13, vol: 0.09, at: i * 0.15 }))
+        },
+        nod() {
+          tone({ type: 'triangle', f0: 520, f1: 440, dur: 0.07, vol: 0.08 })
+          tone({ type: 'triangle', f0: 520, f1: 440, dur: 0.07, vol: 0.08, at: 0.2 })
+        },
+        spin() {
+          tone({ type: 'triangle', f0: 300, f1: 1200, dur: 0.3, vol: 0.12, vib: 30, vibRate: 18 })
+        },
+        happy() {
+          tone({ type: 'triangle', f0: 660, f1: 700, dur: 0.1, vol: 0.14 })
+          tone({ type: 'triangle', f0: 990, f1: 1050, dur: 0.14, vol: 0.14, at: 0.09 })
+        },
+        wink() {
+          tone({ f0: 1760, dur: 0.5, vol: 0.1 })
+          tone({ f0: 2637, dur: 0.45, vol: 0.06, at: 0.04 })
+        },
+        love() {
+          tone({ f0: 480, f1: 820, dur: 0.1, vol: 0.14 })
+          tone({ f0: 600, f1: 1000, dur: 0.12, vol: 0.14, at: 0.13 })
+        },
+        surprised() {
+          tone({ f0: 380, f1: 1500, dur: 0.2, vol: 0.16, vib: 15, vibRate: 12 })
+        },
+        angry() {
+          tone({ type: 'sawtooth', f0: 120, f1: 95, dur: 0.5, vol: 0.12, vib: 12, vibRate: 14, filter: 700 })
+        },
+        sad() {
+          tone({ type: 'triangle', f0: 440, f1: 392, dur: 0.3, vol: 0.13, vib: 8, vibRate: 6 })
+          tone({ type: 'triangle', f0: 392, f1: 262, dur: 0.55, vol: 0.13, at: 0.3, vib: 10, vibRate: 5 })
+        },
+        shy() {
+          tone({ f0: 1300, f1: 1600, dur: 0.07, vol: 0.07 })
+          tone({ f0: 1450, f1: 1750, dur: 0.07, vol: 0.06, at: 0.1 })
+        },
+        tick() {
+          tone({ f0: 1200, f1: 1000, dur: 0.03, vol: 0.05 })
+        },
+        pop() {
+          tone({ f0: 240, f1: 720, dur: 0.07, vol: 0.14 })
+        },
+        sparkle() {
+          ;[1568, 2093, 2637].forEach((fr, i) => tone({ f0: fr, dur: 0.25, vol: 0.06, at: i * 0.06 }))
+        },
+        select() {
+          tone({ type: 'triangle', f0: 520, f1: 1040, dur: 0.1, vol: 0.12 })
+        },
+        babble(ch) {
+          const n = typeof ch === 'string' && ch ? ch.codePointAt(0) : Math.floor(Math.random() * 0xffff)
+          const fr = (330 + (n % 9) * 28) * 1
+          tone({ type: 'square', f0: fr, f1: fr * R(0.85, 1.1), dur: 0.05, vol: 0.05, filter: 1800 })
+        },
+        blub() {
+          tone({ f0: R(500, 700), f1: R(900, 1200), dur: 0.05, vol: 0.05 })
+        },
+        listenStart() {
+          tone({ f0: 880, dur: 0.12, vol: 0.1 })
+          tone({ f0: 1320, dur: 0.16, vol: 0.1, at: 0.1 })
+        },
+        listenEnd() {
+          tone({ f0: 1320, dur: 0.1, vol: 0.09 })
+          tone({ f0: 990, dur: 0.16, vol: 0.09, at: 0.09 })
+        },
+      }
+      const chime = (name, ...args) => {
+        try {
+          report('desk-sfx', { name, ctx: actx ? actx.state : 'none', master: !!sfxMaster })
+          if (prefs.sfx === false || offDuty) return
+          if (Object.hasOwn(tones, name)) tones[name](...args)
+        } catch (e) {
+          report('desk-sfx-err', { name, err: String((e && (e.stack || e.message)) || e) })
+        }
+      }
+
+      const loadImage = (url) =>
+        new Promise((resolve, reject) => {
+          const img = new Image()
+          img.onload = () => resolve(img)
+          img.onerror = () => reject(new Error('image failed: ' + url))
+          img.src = url
+        })
+
+      let prefs = { look: 'deepseek', outfit: 'maid', size: 190, idleLines: '', answerBubble: true, idleBubble: true, greet: true, sfx: true }
+      try {
+        const body = await fetch('/dsh-coo-pet/prefs', { credentials: 'same-origin' }).then((res) => res.json())
+        if (body && body.config) prefs = body.config
+      } catch {
+        /* 默认值兜底 */
+      }
+
+      const splitLines = (text) => {
+        const who = String(prefs.petName || '').trim() || '你的鱼'
+        return String(text ?? '')
+          .split('\n')
+          .map((line) => line.trim().replace(/\{name\}/g, who))
+          .filter(Boolean)
+      }
+      let lines = splitLines(prefs.idleLines)
+
+      const idleMs = () => {
+        const unit = prefs.idleUnit === 'sec' ? 1000 : prefs.idleUnit === 'hour' ? 3600000 : 60000
+        const every = Number(prefs.idleEvery) > 0 ? Number(prefs.idleEvery) : 20
+        return Math.max(2000, every * unit)
+      }
+
+      let pet = null
+      let hit = { x: 0, y: 0, w: 0, h: 0 }
+
+      /* 小跟随窗：世界 = 整块工作区，窗口只是世界上的一个取景框 */
+      let worldSize = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight }
+      let origin = { x: 0, y: 0 }
+      const toLocalX = (v) => v - origin.x
+      const toLocalY = (v) => v - origin.y
+      const applyView = () => {
+        stage.style.width = worldSize.w + 'px'
+        stage.style.height = worldSize.h + 'px'
+        stage.style.transform = 'translate(' + -origin.x + 'px,' + -origin.y + 'px)'
+      }
+
+      try {
+        const meta = await desk.world()
+        if (meta && meta.world && meta.world.w) worldSize = meta.world
+        if (meta && meta.origin) origin = meta.origin
+        applyView()
+      } catch {
+        /* 拿不到就按窗口大小先跑 */
+      }
+      try {
+        desk.onOrigin((payload) => {
+          if (!payload) return
+          if (payload.world && payload.world.w) worldSize = payload.world
+          if (payload.origin) origin = payload.origin
+          applyView()
+        })
+      } catch {
+        /* ignore */
+      }
+      let anchorSentAt = 0
+      const publishAnchor = (box) => {
+        if (!box) return
+        const now = Date.now()
+        if (now - anchorSentAt < 120) return
+        anchorSentAt = now
+        try {
+          desk.anchor({ x: box.x + box.w / 2, y: box.y + box.h, bias: 0.42, moving: box.mode === 'walk' || box.mode === 'run' || box.mode === 'drag' || box.mode === 'air' })
+        } catch {
+          /* ignore */
+        }
+      }
+      let dragging = false
+      let inside = false
+      let seatWalk = null // 走过去再坐：进行中的坐下行走
+      let iconWalk = null // 走过去再搬图标：进行中的挪图行走（phase 1 走到图标前 / phase 2 抱着走）
+      let launchWalk = null // 指令开软件：小跑到目标位准备戳按的行走
+      let carry = null // 搬运中的小包裹标记（非空 = 正举着东西）
+      let carryG = null // 搬运牌子的 SVG 覆盖层
+      let stayMode = false // 原地模式：开关在菜单里（点菜单里的「原地待着」），不再是点她切换
+      let thinkingNow = false // 等回复中：也算原地待着的理由，想完再动
+      let busy = false // DSH 正在跑任务（含思考/执行工具）：原地站住，别溜达别搬图标
+      let lastActive = 0 // DSH 最近一次活动时间（干活节流用）
+      // 统一的 roam 设置口：原地模式优先，其次看 prefs.wander
+      // 对话框/菜单只要在桌面上就禁跑（不管消息发没发），防止别的时机把 roam 放回 free
+      const uiOccupying = () => !!menuEl || !!(chatEl && !chatEl.classList.contains('hidden'))
+      // 本体状态闸：所有会按住她的状态（原地待着/值日/睡觉/思考/干活/语音/界面占用）
+      const heldRoam = () => !!(stayMode || offDuty || napping || thinkingNow || busy || voiceHeld || uiOccupying())
+      const mainRoamFree = () => !heldRoam() && prefs.wander !== false
+      const applyRoam = () => {
+        try {
+          pet?.set?.({ roam: mainRoamFree() ? 'free' : 'off' })
+        } catch {
+          /* ignore */
+        }
+        try { applyCloneRoam() } catch { /* ignore */ }
+      }
+      // 原地模式的两个固定项：点「原地待着」必定待着，点「自由活动」必定恢复，点多少下都一样
+      const setStay = (on) => {
+        stayMode = on
+        try { pet?.stopWalk?.() } catch { /* ignore */ }
+        seatWalk = null
+        seat = null
+        if (on && (iconWalk || carry)) {
+          iconWalk = null
+          carry = null
+          hideCarry()
+        }
+        applyRoam()
+        say(on ? '那我就待在这儿啦' : '又出来溜达咯')
+      }
+
+      // 安静模式：静音、不溜达、不碎碎念不搬图标不乱坐；仍可拖拽、点她、对话框照常能用（只是不出声）
+      const setOffDuty = (on) => {
+        offDuty = on
+        try { localStorage.setItem('coo-offduty', on ? '1' : '0') } catch { /* ignore */ }
+        try { pet?.stopWalk?.() } catch { /* ignore */ }
+        if (on && (iconWalk || carry)) {
+          iconWalk = null
+          carry = null
+          hideCarry()
+        }
+        try { pet?.set?.({ dialogOpen: on }) } catch { /* ignore */ }
+        applyRoam()
+      }
+
+      /* ---------- 快捷指令配套：番茄钟（本地定时，不麻烦 AI） ---------- */
+      let pomoTimer = 0
+      const startPomodoro = () => {
+        window.clearTimeout(pomoTimer)
+        say('番茄钟开始！25 分钟后我叫你~')
+        try { pet?.setExpr?.('determined') } catch { /* ignore */ }
+        pomoTimer = window.setTimeout(() => {
+          pomoTimer = 0
+          say('番茄钟到啦！休息 5 分钟，起来走走~')
+          try { pet?.act?.('hop'); pet?.setExpr?.('excited') } catch { /* ignore */ }
+        }, 25 * 60 * 1000)
+      }
+      const stopPomodoro = (manual) => {
+        if (!pomoTimer) {
+          if (manual) say('现在没有进行中的番茄钟呀')
+          return
+        }
+        window.clearTimeout(pomoTimer)
+        pomoTimer = 0
+        if (manual) say('好，番茄钟取消了~')
+      }
+
+      const S = () => Math.max(0.18, Math.min(1.6, (prefs.size || 190) / 256))
+
+      // 她能站的最低脚位：身体高度 ≈ size * 1.15，再留一点余量
+      const minFeet = () => Math.round((Number(prefs.size) > 0 ? Number(prefs.size) : 190) * 1.2) + 8
+      let seat = null // 坐下的时候临时把「地面」抬到那一条边
+      let looseGround = null // 被放到半空后，落点就是她新的地面（不坠落）
+      const bounds = () => ({
+        W: worldSize.w,
+        H: worldSize.h,
+        floorY:
+          typeof seat === 'number'
+            ? seat
+            : typeof looseGround === 'number'
+              ? looseGround
+              : worldSize.h - (Number(prefs.marginBottom) >= 0 ? Number(prefs.marginBottom) : 8),
+        S: S(),
+      })
+
+      const sendHit = (next) => {
+        if (next === inside) return
+        inside = next
+        desk.hit(next)
+      }
+      // 命中框交给主进程，由它轮询指针位置决定这一层要不要吃点击
+      let boxSentAt = 0
+      const unionBox = (a, b) => ({
+        x: Math.min(a.x, b.x),
+        y: Math.min(a.y, b.y),
+        w: Math.max(a.x + a.w, b.x + b.w) - Math.min(a.x, b.x),
+        h: Math.max(a.y + a.h, b.y + b.h) - Math.min(a.y, b.y),
+      })
+      const publishBox = (force) => {
+        const now = Date.now()
+        if (!force && now - boxSentAt < 260) return
+        boxSentAt = now
+        let box = hit
+        const extra = []
+        try {
+          // 分身各自的矩形也交给主进程：透明窗按「光标在哪个框里」决定接不接鼠标
+          for (const b of cloneBoxes()) extra.push(b)
+          // 输入框/菜单开着时把它们各自的矩形也交上去：透明窗只认这些框决定接不接鼠标
+          if (chatEl && !chatEl.classList.contains('hidden')) {
+            const cr = chatEl.getBoundingClientRect()
+            if (cr.width > 0 && cr.height > 0) extra.push({ x: cr.left, y: cr.top, w: cr.width, h: cr.height })
+          }
+          if (menuEl) {
+            const mr = menuEl.getBoundingClientRect()
+            if (mr.width > 0 && mr.height > 0) extra.push({ x: mr.left, y: mr.top, w: mr.width, h: mr.height })
+          }
+        } catch {
+          /* ignore */
+        }
+        try {
+          desk.hitbox([box, ...extra])
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const inHit = (x, y) => x >= hit.x && y >= hit.y && x <= hit.x + hit.w && y <= hit.y + hit.h
+
+      /* ---------- 影分身：全真实例 ----------
+         每只分身就是一个完整的本体（kit.createBody + 独立 figure 实例）：同一套模型与
+         引擎，真步态、真眨眼、真睡姿、真表情、真拖拽手感——和本体唯一的区别是：
+         不接 emit（没有碎碎念气泡），不参与图标互动，音效只放脚步声（限流防吵）。
+         渲染走本体同款 raster 路径（透明窗合成不了 GL 画布，见 createWhaleBody 处的
+         注释），帧率压到 12fps 压住读回开销。数量不加限制：点 x1 来 1 只、x10 来
+         10 只、x50 来 50 只，全真实例要多少来多少（用户确认不考虑 CPU）。 */
+      const CLONE_RASTER_FPS = 12 // 分身每秒最多转 12 帧（本体 24）：小动作看起来依旧顺滑
+      let clones = [] // { bp(本体实例), layer(挂她自己的 svg.kit 的 fixed 层) }
+      let cloneFrozen = false // 兼容旧 act（cloneFreeze）：为 true 时等同 cloneMode='frozen'
+      let cloneMode = 'free' // 分身自己的行为档位（只管分身，跟本体「原地待着/自由活动」互不影响）：free 自由活动 / idle 原地待机 / frozen 立定不动
+      let cloneTarget = null // 右键菜单当前指向的分身
+      let cloneDrag = null // 正在被左键拖动的分身 { c, vx, vy, lt, lx, ly }
+      let cloneMenuAt = 0 // 上次右键弹分身菜单的时间（去抖：pointerdown 已弹过就不再重复弹）
+      let cloneStepAt = 0 // 脚步声限流的全局最小间隔
+      // 分身的容器：body 层 fixed（#stage 是 will-change:transform 的合成层，动态往里
+      // 加的覆盖层会被透明窗合成器整个丢掉——画布里有像素、屏幕上不显示）。插在
+      // #stage 之前：分身画在本体身后。
+      const cloneStage = document.createElement('div')
+      cloneStage.id = 'clone-stage'
+      cloneStage.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;width:100vw;height:100vh;'
+      document.body.insertBefore(cloneStage, document.getElementById('stage'))
+      // 脚步声限流：一群分身齐步走也不吵（90ms 全局最小间隔 + 45% 概率）
+      const stepSfx = () => {
+        const now = performance.now()
+        if (now - cloneStepAt < 90 || Math.random() > 0.45) return
+        cloneStepAt = now
+        chime('step')
+      }
+      // 分身跟随设置：只有明确按住本体的状态（原地待着/值日/睡觉/干活…）才按住分身；
+      // 「溜达」开关只管本体走不走动，不管分身——影分身之术召出来就是要满屏跑的
+      const cloneRoamMode = () => (!heldRoam() && cloneMode === 'free' ? 'free' : 'off')
+      const applyCloneRoam = () => {
+        const roam = cloneRoamMode()
+        for (const c of clones) {
+          try { c.bp.set({ roam }) } catch { /* ignore */ }
+        }
+      }
+      const applyCloneMode = () => {
+        const roam = cloneRoamMode()
+        for (const c of clones) {
+          try {
+            c.bp.set({ roam, still: cloneMode === 'frozen' })
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      // 分身当前的可视矩形（世界坐标）：直接量她自己的 foreignObject——全真实例自己管
+      // 姿势（躺/坐/压扁/被拎），矩形跟着真实画面走，命中框所见即所得
+      const cloneRect = (c) => {
+        try {
+          const el = c.layer.querySelector('svg.kit foreignObject') || c.layer.querySelector('svg.kit image')
+          if (!el) return null
+          const r = el.getBoundingClientRect()
+          if (!r.width || !r.height) return null
+          return { x: r.left + origin.x, y: r.top + origin.y, w: r.width, h: r.height }
+        } catch {
+          return null
+        }
+      }
+      const cloneBoxes = () => clones.map(cloneRect).filter(Boolean)
+      const cloneAt = (x, y) => {
+        for (let i = clones.length - 1; i >= 0; i--) {
+          const r = cloneRect(clones[i])
+          if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return clones[i]
+        }
+        return null
+      }
+      const dismissClone = (c) => {
+        const i = clones.indexOf(c)
+        if (i < 0) return
+        clones.splice(i, 1)
+        try { c.bp.dispose() } catch { /* ignore */ }
+        c.layer.remove()
+      }
+      const dismissAllClones = () => {
+        const n = clones.length
+        while (clones.length) dismissClone(clones[0])
+        cloneTarget = null
+        cloneDrag = null
+        if (n) say('分身都收回来了')
+      }
+      const spawnClones = async (n) => {
+        if (!kit || !pack || !buildCloneBody) return
+        const count = Math.max(1, Math.round(Number(n) || 0))
+        const gy = bounds().floorY
+        const bx = hit ? hit.x + hit.w / 2 : worldSize.w - 220
+        for (let i = 0; i < count; i++) {
+          // 绕着本体扇形散开落位，避免全叠在本体脚边
+          const side = i % 2 === 0 ? 1 : -1
+          let x = bx + side * (90 + Math.random() * 560 + (i > 1 ? Math.random() * 320 : 0))
+          if (x < 60 || x > worldSize.w - 60) x = Math.random() * (worldSize.w - 120) + 60
+          const layer = document.createElement('div')
+          layer.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;width:100%;height:100%;'
+          cloneStage.appendChild(layer)
+          try {
+            const bp = await buildCloneBody(layer, {
+              x: Math.round(x),
+              y: gy,
+              facing: Math.random() < 0.5 ? -1 : 1,
+            })
+            bp.set({ roam: cloneRoamMode(), still: cloneMode === 'frozen' })
+            clones.push({ bp, layer })
+          } catch (e) {
+            layer.remove()
+            try { report('clone-live-err', { m: String((e && e.message) || e) }) } catch { /* ignore */ }
+          }
+        }
+        say('影分身之术！' + clones.length + ' 只就位')
+        try { publishBox(true) } catch { /* ignore */ }
+      }
+
+      /* ---------- 菜单 / 输入框 ---------- */
+      let menuEl = null
+      const closeMenu = () => {
+        if (menuWatch) {
+          document.removeEventListener('pointerdown', menuWatch, true)
+          menuWatch = null
+        }
+        if (menuEl) {
+          menuEl.remove()
+          menuEl = null
+        }
+        try {
+          desk.menu(false)
+        } catch {
+          /* ignore */
+        }
+        try {
+          pet?.set?.({ dialogOpen: false })
+          applyRoam()
+        } catch {
+          /* ignore */
+        }
+      }
+      const openApp = (target) => {
+        fetch('/dsh-coo-pet/open', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target }),
+        }).catch(() => {})
+      }
+      // 一键复位：按名字把她搬乱的图标写回最新一档快照并弹出该档；连按可连撤
+      const restoreIconsAll = async () => {
+        iconWalk = null
+        carry = null
+        hideCarry()
+        try { pet?.stopWalk?.() } catch { /* ignore */ }
+        let ok = false
+        try {
+          const r = await desk.restoreIcons?.()
+          ok = !!(r && r.ok)
+        } catch { /* ignore */ }
+        iconCache = { at: 0, data: [] }
+        say(ok ? '图标归位啦' : '没有可用的图标快照')
+        return ok
+      }
+      // 一键全复位：把历史栈里的快照一档档全部撤光，回到她第一次搬乱前的样子
+      const restoreIconsAllEvery = async () => {
+        try { report('restore-all-call', { hasApi: typeof desk.restoreIconsAll }) } catch { /* ignore */ }
+        iconWalk = null
+        carry = null
+        hideCarry()
+        try { pet?.stopWalk?.() } catch { /* ignore */ }
+        let r = null
+        try {
+          r = await desk.restoreIconsAll?.()
+        } catch (e) {
+          try { report('restore-all-err', { m: String((e && e.message) || e) }) } catch { /* ignore */ }
+        }
+        try { report('restore-all-res', { ok: !!(r && r.ok), restored: (r && r.restored) || 0, err: (r && r.error) || '' }) } catch { /* ignore */ }
+        iconCache = { at: 0, data: [] }
+        say(r && r.ok ? '全部归位啦，回到最初的样子' : '没有可用的图标快照')
+        return !!(r && r.ok)
+      }
+      const MENU_NAMES = {
+        open: '打开DSH',
+        input: '输入…',
+        restart: '重启DSH',
+        reset: '图标复位',
+        resetAll: '一键全复位',
+        clone: '影分身',
+        stay: '原地待着',
+        free: '自由活动',
+        duty: '安静模式',
+        actions: '特殊动作',
+        look: '换形象',
+        outfit: '换衣服',
+        none: '藏起来',
+      }
+      const menuItems = () => {
+        // 老版短排序兑底：旧配置只有五项（open,input,voice,close,none），换形象/换衣服这些
+        // 新功能永远出不来——检测到就直接换成新版全项；自定义过的排序不动
+        const LEGACY = 'open,input,voice,close,none'
+        let orderStr = String((prefs && prefs.menuOrder) || '')
+        if (!orderStr.trim() || orderStr.replace(/\s/g, '') === LEGACY) {
+          orderStr = 'open,input,restart,reset,resetAll,stay,free,duty,actions,look,outfit,clone,none'
+        }
+        let order = orderStr
+          .split(',')
+          .map((s) => s.trim())
+          .filter((id) => MENU_NAMES[id])
+        // 新功能项补位：老自定义排序里没有的新项，插到「藏起来」前面
+        for (const nid of ['resetAll', 'clone']) {
+          if (!order.includes(nid)) {
+            const idx = order.indexOf('none')
+            if (idx >= 0) order.splice(idx, 0, nid)
+            else order.push(nid)
+          }
+        }
+        // 排序以设置页保存的 menuOrder 为唯一来源：删了就是删了，要找回在设置页点「加回」
+        const seen = {}
+        const out = []
+        for (const id of order) {
+          if (seen[id]) continue
+          seen[id] = true
+          if (id === 'open') out.push(['打开DSH', () => openApp('dsh')])
+          else if (id === 'input') out.push(['输入…', () => openChat()])
+          else if (id === 'restart') out.push(['重启DSH', () => {
+            closeMenu()
+            say('我去重启啦，马上回来~')
+            window.setTimeout(async () => {
+              try { await desk.restartDsh?.() } catch { /* 重启脚本接管 */ }
+            }, 1200)
+          }])
+          else if (id === 'reset') out.push(['图标复位', () => { restoreIconsAll(); closeMenu() }])
+          else if (id === 'resetAll') out.push(['一键全复位', () => { restoreIconsAllEvery(); closeMenu() }])
+          else if (id === 'stay') out.push(['原地待着', () => { setStay(true); closeMenu() }])
+          else if (id === 'free') out.push(['自由活动', () => { setStay(false); closeMenu() }])
+          else if (id === 'duty') out.push([offDuty ? '关闭安静模式' : '安静模式', () => {
+            closeMenu()
+            if (!offDuty) {
+              say('好，那我安静会儿~')
+              setOffDuty(true)
+            } else {
+              setOffDuty(false)
+              say('安静模式关闭，我又活蹦乱跳咯！')
+            }
+          }])
+          else if (id === 'actions') out.push(['特殊动作›', () => openMenu(menuAnchor.x, menuAnchor.y, 'actions')])
+          else if (id === 'look') out.push(['换形象›', () => openMenu(menuAnchor.x, menuAnchor.y, 'look')])
+          else if (id === 'outfit') out.push(['换衣服›', () => openMenu(menuAnchor.x, menuAnchor.y, 'outfit')])
+          else if (id === 'clone') out.push(['影分身›', () => openMenu(menuAnchor.x, menuAnchor.y, 'clones')])
+          else if (id === 'none') out.push(['藏起来', () => setDisplay('none')])
+        }
+        return out
+      }
+      /* ---------- 换形象 / 换衣服：改 prefs 后页面会自动重载换装 ---------- */
+      const LOOKS = [
+        ['deepseek', '深蓝经典'], ['claude', '橘色'], ['chatgpt', '青绿'], ['gemini', '蓝白'],
+        ['kimi', '银灰'], ['qwen', '紫调'], ['minimax', '暖橙'], ['harness', '暗金'],
+      ]
+      const OUTFITS = [['maid', '女仆装'], ['cape', '披风'], ['crew', '水手服']]
+      const lookItems = () => LOOKS.map(([id, label]) => [
+        (((prefs.look || 'deepseek') === id ? '· ' : '') + label + '（' + id + '）'),
+        () => { savePrefs({ look: id }); closeMenu(); say('换件新衣裳～') },
+      ])
+      const outfitItems = () => OUTFITS.map(([id, label]) => [
+        (((prefs.outfit || 'maid') === id ? '· ' : '') + label),
+        () => { savePrefs({ outfit: id }); closeMenu(); say('换件新衣裳～') },
+      ])
+      // 切分身行为档位：只动分身，本体照旧（她的「原地待着/自由活动」是另一套）
+      const setCloneMode = (m) => {
+        cloneMode = m === 'idle' || m === 'frozen' ? m : 'free'
+        applyCloneMode()
+        try { say(cloneMode === 'free' ? '分身自由活动～' : cloneMode === 'idle' ? '分身原地待机（还喘气呢）' : '分身都定格了') } catch { /* ignore */ }
+      }
+      const cloneSpawnItems = () => [
+        ['x1', () => { closeMenu(); spawnClones(1) }],
+        ['x10', () => { closeMenu(); spawnClones(10) }],
+        ['x50', () => { closeMenu(); spawnClones(50) }],
+        ['取消分身', () => { closeMenu(); dismissAllClones() }],
+      ]
+      const cloneMenuItems = () => {
+        const one = cloneTarget
+        return [
+          ['解除分身', () => {
+            if (one) dismissClone(one)
+            closeMenu()
+          }],
+          ['解除全部分身', () => { dismissAllClones(); closeMenu() }],
+        ]
+      }
+
+      /* ---------- 动作 / 表情：引擎里现成但一直没入口的一批 ---------- */
+      const ACTIONS = [
+        ['点头', 'nod'], ['摇头', 'shake'], ['转圈', 'spin'], ['挥手', 'wave'], ['鞠躬', 'bow'],
+        ['发抖', 'shiver'], ['扑腾', 'flap'], ['跳舞', 'dance'], ['晕一下', 'dizzy'], ['原地跳', 'hop'],
+        ['跳一下', 'jump'], ['张望', 'look'], ['转个身', 'turn'], ['坐下', 'sit'], ['打个盹', 'sleep'],
+      ]
+      const EXPRESSIONS = [
+        ['开心', 'happy'], ['眨眼', 'wink'], ['爱心眼', 'love'], ['害羞', 'shy'], ['惊讶', 'surprised'],
+        ['生气', 'angry'], ['难过', 'sad'], ['犯困', 'sleepy'], ['思考', 'thinking'], ['得意', 'smug'],
+        ['嘟嘴', 'pout'], ['担心', 'worried'], ['认真', 'determined'], ['慌张', 'flustered'], ['吓到', 'scared'],
+        ['兴奋', 'excited'], ['掉眼泪', 'cry'], ['疑惑', 'confused'],
+      ]
+      const performAction = (kind, id) => {
+        closeMenu()
+        try {
+          if (kind === 'expr') pet?.setExpr?.(id)
+          else if (pet?.act?.(id) === false) say('现在做不了这个动作')
+        } catch {
+          /* ignore */
+        }
+      }
+      const actionItems = () => {
+        const out = [
+          ['随机来一个', () => {
+            const pool = []
+            for (const [, id] of ACTIONS) pool.push(['act', id])
+            for (const [, id] of EXPRESSIONS) pool.push(['expr', id])
+            const pick = pool[Math.floor(Math.random() * pool.length)]
+            performAction(pick[0], pick[1])
+          }],
+        ]
+        for (const [label, id] of ACTIONS) out.push([label, () => performAction('act', id)])
+        for (const [label, id] of EXPRESSIONS) out.push(['表情' + label, () => performAction('expr', id)])
+        return out
+      }
+      const savePrefs = (patch) => {
+        Object.assign(prefs, patch)
+        fetch('/dsh-coo-pet/prefs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch),
+        }).catch(() => {})
+      }
+      const zhVoices = () => {
+        try {
+          const all = window.speechSynthesis ? window.speechSynthesis.getVoices() : []
+          return all.filter((v) => /^(zh|cmn)/i.test(v.lang || '')).slice(0, 6)
+        } catch {
+          return []
+        }
+      }
+      const voiceItems = () => {
+        const out = [
+          [(prefs.voiceMode !== 'tts' ? '· ' : '') + '咿呀声（她的音库）', () => { savePrefs({ voiceMode: 'babble' }); closeMenu() }],
+          [(prefs.voiceMode === 'tts' ? '· ' : '') + '系统朗读', () => { savePrefs({ voiceMode: 'tts' }); closeMenu() }],
+        ]
+        for (const v of zhVoices()) {
+          out.push([v.name, () => { savePrefs({ voiceMode: 'tts', voiceName: v.name }); closeMenu() }])
+        }
+        if (out.length <= 2) out.push(['（系统里没有中文音色）', () => closeMenu()])
+        return out
+      }
+      const setDisplay = (value) => {
+        fetch('/dsh-coo-pet/prefs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ display: value }),
+        }).catch(() => {})
+        if (value === 'none') desk.hit(false)
+      }
+      let menuWatch = null
+      let menuAnchor = { x: 0, y: 0 }
+      const openMenu = (x, y, view = 'main') => {
+        try { report('menu-open', { view, x: Math.round(x), y: Math.round(y) }) } catch { /* ignore */ }
+        // 换视图时沿用当前列表的位置（拖过就不弹回她头顶）
+        const carried = menuEl ? { x: parseFloat(menuEl.style.left) || 0, y: parseFloat(menuEl.style.top) || 0 } : null
+        closeMenu()
+        menuAnchor = { x, y }
+        // 打开列表时她原地等着，别乱跑（roam 'off' 止走动，dialogOpen 止自选动作）
+        try {
+          pet?.set?.({ roam: 'off', dialogOpen: true })
+          pet?.stopWalk?.()
+        } catch {
+          /* ignore */
+        }
+        menuWatch = (event) => {
+          if (menuEl && menuEl.contains(event.target)) return
+          closeMenu()
+        }
+        setTimeout(() => document.addEventListener('pointerdown', menuWatch, true), 0)
+        // 列表开着的时候窗口不吃「穿透」，否则点外面点不到这边、菜单关不掉
+        try {
+          desk.menu(true)
+        } catch {
+          /* ignore */
+        }
+        const el = document.createElement('div')
+        el.className = 'menu'
+        if (carried) {
+          el.style.left = carried.x + 'px'
+          el.style.top = carried.y + 'px'
+        } else {
+          el.style.left = Math.max(8, Math.min(window.innerWidth - 168, toLocalX(x))) + 'px'
+          el.style.top = Math.max(8, Math.min(window.innerHeight - 230, toLocalY(y))) + 'px'
+        }
+        const head = document.createElement('div')
+        head.className = 'menu-head'
+        const VIEW_HEADS = { voice: '‹换声音', actions: '‹特殊动作', look: '‹换形象', outfit: '‹换衣服', clones: '‹影分身', clone: '‹返回' }
+        head.textContent = view === 'main' ? String((prefs && prefs.petName) || '你的鱼') : (VIEW_HEADS[view] || '‹ 返回')
+        head.style.cursor = 'grab'
+        head.title = '按住拖动列表'
+        head.addEventListener('click', (event) => {
+          event.stopPropagation()
+          if (menuDrag && menuDrag.moved) return
+          if (view !== 'main') openMenu(menuAnchor.x, menuAnchor.y, 'main')
+        })
+        head.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return
+          menuDrag = { sx: event.clientX, sy: event.clientY, ox: parseFloat(el.style.left) || 0, oy: parseFloat(el.style.top) || 0, moved: false }
+        })
+        el.appendChild(head)
+        const rows = view === 'voice' ? voiceItems() : view === 'actions' ? actionItems() : view === 'look' ? lookItems() : view === 'outfit' ? outfitItems() : view === 'clones' ? cloneSpawnItems() : view === 'clone' ? cloneMenuItems() : menuItems()
+        for (const [label, run] of rows) {
+          const item = document.createElement('div')
+          item.className = 'menu-item'
+          item.textContent = label
+          item.addEventListener('click', (event) => {
+            event.stopPropagation()
+            run()
+          })
+          el.appendChild(item)
+        }
+        if (rows.length > 12) {
+          el.style.maxHeight = Math.round(window.innerHeight * 0.72) + 'px'
+          el.style.overflowY = 'auto'
+        }
+        document.body.appendChild(el)
+        menuEl = el
+        // 按实际尺寸防出屏：屏幕边缘也保证完整显示（覆盖旧的高度估算）
+        clampMenuToScreen(el)
+      }
+
+      // 列表拖动状态：按住标题栏拖，移动超过 4px 才算拖（不误伤点击返回）
+      let menuDrag = null
+      const clampMenuToScreen = (el) => {
+        const w = el.offsetWidth
+        const h = el.offsetHeight
+        el.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, parseFloat(el.style.left))) + 'px'
+        el.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, parseFloat(el.style.top))) + 'px'
+      }
+      document.addEventListener('pointermove', (event) => {
+        if (!menuEl || !menuDrag) return
+        const dx = event.clientX - menuDrag.sx
+        const dy = event.clientY - menuDrag.sy
+        if (!menuDrag.moved && Math.abs(dx) + Math.abs(dy) < 4) return
+        menuDrag.moved = true
+        menuEl.style.left = Math.max(8, Math.min(window.innerWidth - menuEl.offsetWidth - 8, menuDrag.ox + dx)) + 'px'
+        menuEl.style.top = Math.max(8, Math.min(window.innerHeight - menuEl.offsetHeight - 8, menuDrag.oy + dy)) + 'px'
+      })
+      document.addEventListener('pointerup', (event) => {
+        if (!menuDrag) return
+        const wasDrag = menuDrag.moved
+        menuDrag = null
+        if (wasDrag && menuEl) {
+          event.stopPropagation()
+          menuEl.style.cursor = ''
+        }
+      }, true)
+
+      const openChat = (wantFocus = true) => {
+        closeMenu()
+        try {
+          pet?.set?.({ roam: 'off', dialogOpen: true })
+          pet?.stopWalk?.()
+        } catch {
+          /* ignore */
+        }
+        chatEl.classList.remove('hidden')
+        const box = hit
+        chatEl.style.left = Math.max(8, Math.min(window.innerWidth - 280, toLocalX(box.x + box.w / 2 - 134))) + 'px'
+        chatEl.style.top = Math.max(8, Math.min(window.innerHeight - 120, toLocalY(box.y) - 92)) + 'px'
+        publishBox(true)
+        if (wantFocus === false) return
+        // 借键盘：窗口平时 focusable:false，打字前临时要焦点
+        try {
+          desk?.chatFocus?.(true)
+        } catch {
+          /* ignore */
+        }
+        chatText.focus()
+        report('dbg-chat-open', {})
+      }
+      const closeChat = () => {
+        chatEl.classList.add('hidden')
+        // 关一次就清空：不保留上次输入的内容
+        try {
+          chatText.value = ''
+          chatText.placeholder = '跟她说一句…'
+        } catch {
+          /* ignore */
+        }
+        try {
+          desk?.chatFocus?.(false)
+        } catch {
+          /* ignore */
+        }
+        try {
+          pet?.set?.({ dialogOpen: false })
+          applyRoam()
+        } catch {
+          /* ignore */
+        }
+        publishBox(true)
+      }
+      document.getElementById('chat-close').addEventListener('click', closeChat)
+      document.getElementById('chat-send').addEventListener('click', () => submitChat())
+      chatText.addEventListener('keydown', (event) => {
+        event.stopPropagation()
+        // 诊断：确认按键真的到达输入框（遥测只留最后一条）
+        report('dbg-chat-key', { key: event.key, composing: event.isComposing ? 1 : 0 })
+        // 输入法选字/确认用的 Enter（isComposing）不能当成发送
+        if (event.isComposing || event.keyCode === 229) return
+        if (event.key === 'Enter') submitChat()
+        if (event.key === 'Escape') closeChat()
+      })
+      // 点对话框任意处都补借一次键盘：窗口平时 focusable:false，
+      // 焦点被别的窗口抢走后 Enter 会失灵——点一下输入框就恢复
+      chatEl.addEventListener('pointerdown', () => {
+        try {
+          desk.chatFocus?.(true)
+        } catch {
+          /* ignore */
+        }
+      })
+      /* ---------- 指令开软件：识别「打开X」，小跑过去戳一下，然后真的启动 ---------- */
+      let thinkTimer = null
+      // 「等回复」也原地待着：想着的时候不开新步子，想完（或 45 秒安全阀到）恢复
+      const clearThinking = () => {
+        thinkingNow = false
+        try { pet?.set?.({ thinking: false }) } catch { /* ignore */ }
+        applyRoam()
+      }
+      const startThinking = () => {
+        thinkingNow = true
+        try {
+          pet?.set?.({ thinking: true, roam: 'off' })
+          // 想的时候也不走：正在走的路立刻站住（正事在办时除外）
+          if (!launchWalk && !iconWalk && !seatWalk) pet?.stopWalk?.()
+        } catch {
+          /* ignore */
+        }
+        window.clearTimeout(thinkTimer)
+        // 安全阀：最多想 45 秒，回不来就自己缓过神
+        thinkTimer = window.setTimeout(clearThinking, 45000)
+      }
+      const LAUNCH_RE = /^(?:帮我|麻烦|请)?(?:打开|启动|运行|开一下|开个|开启)\s*([^，。!?\s]{1,24}?)\s*(?:软件|程序|应用)?[吧呀呢]?$/
+      const performTapAndLaunch = (name) => {
+        try { pet?.act?.('hop') } catch { /* ignore */ }
+        try { pet?.setExpr?.('happy') } catch { /* ignore */ }
+        Promise.resolve()
+          .then(() => desk.launch(name))
+          .then((res) => {
+            if (res && res.ok) say('打开咯：' + (res.app || name))
+            else say('没找到「' + name + '」，我认不出这个名字')
+          })
+          .catch(() => say('打开失败了，你再试试？'))
+      }
+      const launchTheater = async (name) => {
+        // 菜单/输入框开着就不做带行走的开场（她得原地待着），直接启动
+        // 注意：服务端 busy（DSH 会话在跑）不拦这里——她正是在执行用户的开软件指令
+        if (!pet || stayMode || dragging || menuEl || !(chatEl && chatEl.classList.contains('hidden'))) {
+          report('dbg-launch-skip', { why: !pet ? 'no-pet' : stayMode ? 'stayMode' : dragging ? 'dragging' : menuEl ? 'menu' : 'chat-open', name })
+          performTapAndLaunch(name)
+          return
+        }
+        // 先在桌面上找这个名字的图标：找到了就走到它旁边，站定戳一下再启动
+        let icon = null
+        try {
+          const res = await desk.icons()
+          const list = res && res.ok && Array.isArray(res.data) ? res.data : []
+          const want = String(name || '').toLowerCase()
+          for (const it of list) {
+            const nm = String(it.name || '').replace(/\.lnk$/i, '').toLowerCase()
+            if (!nm) continue
+            if ((nm === want || nm.includes(want) || want.includes(nm)) && (!icon || nm.length < icon._nm.length)) {
+              icon = { ...it, _nm: nm }
+            }
+          }
+          report('dbg-launch-icons', { name, count: list.length, matched: icon ? icon.name : null, wx: icon ? Math.max(70, Math.min(worldSize.w - 70, icon.x + 85)) : null, wy: icon ? Math.max(minFeet(), Math.min(bounds().floorY, icon.y + 92)) : null })
+        } catch (err) {
+          report('dbg-launch-icons-err', { name, msg: String(err && err.message || err) })
+        }
+        const id = 'launch-' + Math.round(Math.random() * 1e6)
+        if (icon) {
+          // 站到图标旁边（贴右沿、脚踩图标格子底），够不着就贴边（图标坐标已是 CSS 像素，格子约 77×96）
+          const ix = Math.max(70, Math.min(worldSize.w - 70, icon.x + 85))
+          const iy = Math.max(minFeet(), Math.min(bounds().floorY, icon.y + 92))
+          const okWalk = pet.walkTo?.(ix, true, id, iy)
+          report('dbg-launch-walk', { toIcon: true, ix, iy, ok: okWalk === true, name })
+          if (okWalk) {
+            launchWalk = { id, name }
+            say('好嘞，去开' + name)
+            return
+          }
+        }
+        // 图标没找到：走到屏幕下沿（任务栏方向）戳一下
+        const me = pet.layout?.()
+        const tx = Math.max(60, Math.min(worldSize.w - 60, Math.round((me ? me.x : worldSize.w / 2) + (Math.random() < 0.5 ? -220 : 220))))
+        const okFall = pet.walkTo?.(tx, true, id, worldSize.h - 8)
+        report('dbg-launch-walk', { toIcon: false, tx, ok: okFall === true, name })
+        if (okFall) {
+          launchWalk = { id, name }
+          say('好嘞，去开' + name)
+        } else {
+          performTapAndLaunch(name)
+        }
+      }
+
+      const submitChat = () => {
+        const text = String(chatText.value || '').trim()
+        // 诊断：确认提交函数被调到、拿到的是什么文本
+        report('dbg-chat-submit', { text: text.slice(0, 30), len: text.length })
+        if (!text) return
+        chatText.value = ''
+        // 先拦一道本地指令：打开某软件就不用麻烦 AI 了
+        const m = text.match(LAUNCH_RE)
+        if (m && m[1]) {
+          closeChat()
+          launchTheater(m[1].trim())
+          return
+        }
+        // 本地快捷指令：不麻烦 AI，她自己做（和「打开XX」同一层拦截）
+        const cmd = text.replace(/\s+/g, '')
+        if (/^(?:开启)?安静模式$/.test(cmd)) {
+          closeChat()
+          if (!offDuty) {
+            say('好，那我安静会儿~')
+            setOffDuty(true)
+          }
+          return
+        }
+        if (/^(?:关闭|取消|解除)安静模式$/.test(cmd)) {
+          closeChat()
+          if (offDuty) {
+            setOffDuty(false)
+            say('安静模式关闭，我又活蹦乱跳咯！')
+          }
+          return
+        }
+        if (/^(?:开始|启动)?番茄钟$/.test(cmd)) {
+          closeChat()
+          startPomodoro()
+          return
+        }
+        if (/^(?:结束|停止|取消)番茄钟$/.test(cmd)) {
+          closeChat()
+          stopPomodoro(true)
+          return
+        }
+        // 插入会话优先：填了 Session ID 就发进那个会话，没填才跟当前会话
+        // 只认绑定的会话：填了谁就问谁，绝不另找会话（问题串到别的会话里回答就会被桥接走）；
+        // 不填不说话——提醒去设置里填
+        const sessionId = String((prefs && prefs.attachSession) || '').trim()
+        if (!sessionId) {
+          closeChat()
+          say('还没绑定会话哦，去设置页填一个 Session ID 吧')
+          return
+        }
+        fetch('/dsh-coo-pet/prompt', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text, sessionId }),
+        }).catch(() => {})
+        say('说了：' + text.slice(0, 30))
+        startThinking()
+        closeChat()
+      }
+
+      /* ---------- 建她 ---------- */
+      try {
+        // 本仓库不随附鲸鱼美术资源（权利说明见 THIRD_PARTY_NOTICES.md）：图没就位时给出引导而不是白屏
+        const whaleOk = await fetch(`${ROOT}/whale/model.json`, { method: 'GET' })
+          .then((res) => res.ok)
+          .catch(() => false)
+        if (!whaleOk) {
+          const hint = document.createElement('div')
+          hint.textContent = '🐳 鲸鱼贴图缺失 —— 插件文件不完整，重新下载完整的插件包后重启 DSH'
+          hint.style.cssText =
+            'position:fixed;left:50%;top:38%;transform:translateX(-50%);padding:10px 16px;background:rgba(255,255,255,0.95);color:#1d2333;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.22);font:13px/1.6 system-ui,"Microsoft YaHei",sans-serif;white-space:nowrap;'
+          document.body.appendChild(hint)
+          throw new Error('whale textures missing: plugin package incomplete')
+        }
+        kit = await import(`${ROOT}/kit/body.js`)
+        pack = await import(`${ROOT}/whale/figure.js`)
+        const model = await fetch(`${ROOT}/whale/model.json`).then((res) => res.json())
+
+        const host = {
+          root: stage,
+          bounds,
+          emit(kind, detail) {
+            // 行走结局：到了就坐下 / 挪图标；被打断就放弃这轮，下次再试
+            if (kind === 'arrived' || kind === 'interrupted') {
+              const id = detail && detail.walkId
+              const sw = seatWalk
+              const iw = iconWalk
+              const lw = launchWalk
+              if (lw && lw.id === id) {
+                launchWalk = null
+                if (kind === 'arrived') {
+                  say('咚——我戳它一下')
+                  performTapAndLaunch(lw.name)
+                }
+                return
+              }
+              if (sw && sw.id === id) {
+                seatWalk = null
+                if (kind === 'arrived') sitAt(sw.x, sw.y)
+                if (kind === 'arrived' && sw.line && lines.length) chatterSay(sw.line)
+              }
+              if (iw && iw.id === id) {
+                if (kind === 'arrived' && iw.phase === 1) {
+                  // 到了图标跟前：举起包裹，抱着走到新位置再放下
+                  const dx = Math.random() < 0.5 ? -96 : 96
+                  const toX = Math.max(8, Math.min(worldSize.w - 120, iw.icon.x + dx))
+                  const toY = Math.max(8, Math.min(window.innerHeight - 120, iw.icon.y + (Math.random() < 0.4 ? 96 : 0)))
+                  const id2 = 'icon2-' + Math.round(Math.random() * 1e6)
+                  if (pet.walkTo?.(toX, false, id2, worldSize.h - 8)) {
+                    iconWalk = { id: id2, icon: iw.icon, phase: 2, toX, toY }
+                    carry = { toX, toY }
+                    showCarry()
+                    say('抱起来咯')
+                  } else {
+                    iconWalk = null
+                  }
+                  return
+                }
+                iconWalk = null
+                carry = null
+                hideCarry()
+                if (kind === 'arrived' && iw.phase === 2) {
+                  const fw = iw
+                  window.setTimeout(async () => {
+                    // 落地前最后一道闸：这会儿有窗口开着就不真动图标
+                    if (!(await deskClean(true))) {
+                      report('dbg-carry-skip', { why: 'windows-before-place' })
+                      return
+                    }
+                    await desk.moveIcon({ index: fw.icon.i, x: fw.toX, y: fw.toY }).catch(() => {})
+                    iconCache = { at: 0, data: [] } // 图标位置变了，刷新缓存
+                    say('放这儿')
+                  }, 300)
+                }
+              }
+              return
+            }
+            if (kind !== 'touch' || !detail) return
+            // 拎起/甩出/戳碰的音效由 kit 引擎自己发（grab/whoosh/poke），页面不重复播
+            if (detail.kind === 'poke') {
+              const pick = lines.length ? lines[Math.floor(Math.random() * lines.length)] : '诶？'
+              say(pick)
+            }
+            let dropFeet = null
+            if (detail.kind === 'drop') {
+              // 轻轻放下：落点变成新地面，她就在这儿接着溜达
+              let boxNow = null
+              try {
+                boxNow = pet && pet.layout ? pet.layout() : null
+              } catch {
+                boxNow = null
+              }
+              const feet = boxNow && boxNow.box ? Math.round(boxNow.box.y + boxNow.box.h) : null
+              dropFeet = feet
+              if (typeof feet === 'number') {
+                looseGround = Math.max(minFeet(), Math.min(worldSize.h - 12, feet))
+                if (seat !== null) seat = null
+                try {
+                  pet.place(Math.round(boxNow.x), boxNow.facing || -1, looseGround)
+                } catch {
+                  /* ignore */
+                }
+              }
+            } else if (detail.kind === 'throw') {
+              // 扔出去：地面回到屏幕底，她自己掉下去
+              looseGround = null
+              if (seat !== null) seat = null
+            }
+            // 静默遥测：每次松手上报判定/落点/地面（不显示给用户，供远程排查）
+            report('desk-drop', { kind: detail.kind, feet: dropFeet, ground: looseGround, world: worldSize.h })
+          },
+          sound(name, ...args) {
+            chime(name, ...args)
+          },
+          start: { x: Math.round(worldSize.w - 220), y: bounds().floorY, facing: -1 },
+        }
+
+        pet = await pack.createWhaleBody('', {
+          model,
+          scheme: `${prefs.look || 'deepseek'}-${prefs.outfit || 'maid'}`,
+          kit,
+          loadImage,
+          asset: (p) => `${ROOT}/asset?p=${encodeURIComponent('whale/' + p)}`,
+          host,
+          ground: 'free',
+          // 本环境（透明置顶窗 + DWM 合成）实测合成不了 GL 画布本体：走 foreignObject 直渲
+          // 会在几十秒~两分钟内把页面拖进休眠、窗口直接消失（两次复现）。raster 模式每帧把
+          // 画面转成 dataURL 塞进 SVG <image>——CPU 读回，稳定可靠，是唯一验证过能长跑的
+          // 本体显示路径，所以必须开着。配 rasterFps 节流压住最坏情况的开销。
+          raster: true,
+          rasterFps: 24, // 每秒最多转 24 帧（走路 60fps 时省 ~60% 读回；待机本来就只有 ~8fps 不受影响）
+        })
+        // 分身的造法：和本体同一套模型/贴图/引擎，独立 figure 实例 + raster(12fps)。
+        // start 里的 skin 让她穿同一件衣服；host 不接 emit（没有气泡），声音只放脚步声。
+        buildCloneBody = async (root, at) => kit.createBody({
+          root,
+          bounds,
+          emit: () => {},
+          sound: (name, kind, ...args) => { if (name === 'step') stepSfx(); else chime(name, ...args) },
+          start: { x: at.x, y: at.y, facing: at.facing, skin: prefs.outfit || 'maid' },
+        }, {
+          figure: await pack.createWhaleFigure('', {
+            model,
+            scheme: `${prefs.look || 'deepseek'}-${prefs.outfit || 'maid'}`,
+            kit,
+            loadImage,
+            asset: (p) => `${ROOT}/asset?p=${encodeURIComponent('whale/' + p)}`,
+            raster: true,
+            rasterFps: 12, // 分身画面每秒最多转 12 帧，压住每只一条管线的读回开销
+          }),
+          ground: 'free',
+        })
+        try {
+          pet.place(Math.round(worldSize.w - 220), -1, bounds().floorY)
+        } catch {
+          /* 位置随便 */
+        }
+        try {
+          applyRoam()
+        } catch {
+          /* ignore */
+        }
+        // 开机就处于安静模式：原地待着、不做自发动作、不出声
+        if (offDuty) {
+          try { pet?.set?.({ dialogOpen: true }) } catch { /* ignore */ }
+        }
+        // 后台预热全部配色×衣服的贴图：之后菜单里换装原地无缝、零等待
+        try {
+          pet?.preload?.()
+        } catch {
+          /* ignore */
+        }
+      } catch (error) {
+        report('desk-error', { message: String((error && (error.stack || error.message)) || error) })
+        say('启动失败：' + ((error && error.message) || error))
+      }
+
+      if (pet) {
+        report('desk-ready', { scheme: String(prefs.look) + '-' + String(prefs.outfit), w: worldSize.w, h: worldSize.h, size: prefs.size })
+        window.setInterval(() => {
+          try {
+            const box = pet.layout?.()
+            report('desk-tick', { petX: Math.round((box && box.x) || 0), mode: (box && box.mode) || '', hit, origin, worldW: worldSize.w, seat, clones: clones.length, cloneModes: clones.slice(0, 8).map((c) => { try { return (c.bp.layout && c.bp.layout().mode) || '' } catch { return '' } }), cloneBoxes: cloneBoxes().slice(0, 8), cloneRects: clones.slice(0, 8).map((c) => { const r = cloneRect(c); return r ? { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } : null }), fps: (window.__cooFps || 0), petG: (() => { try { const nodes = stage.querySelectorAll('svg.kit g[transform]'); const last = nodes[nodes.length - 1]; const r = last && last.getBoundingClientRect(); return r ? { t: last.getAttribute('transform'), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } : null } catch { return null } })(), stageRect: (() => { try { const r = stage.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } } catch { return null } })(), screenX: window.screenX, screenY: window.screenY, viewW: window.innerWidth, viewH: window.innerHeight, dpr: window.devicePixelRatio })
+          } catch (error) {
+            report('desk-error', { message: String((error && error.message) || error) })
+          }
+        }, 6000)
+      }
+
+      /* ---------- 指针：靠 forwarded mousemove 判断她在不在下面 ---------- */
+      window.addEventListener('mousemove', (event) => {
+        if (dragging) return
+        const wx = event.clientX + origin.x
+        const wy = event.clientY + origin.y
+        // 光标停在分身身上时她先站住别走：不然你一凑过去她就溜了，永远点不到
+        const hovered = cloneAt(wx, wy)
+        if (hovered) hovered.pauseT = 0.8
+        sendHit(inHit(wx, wy) || !!hovered)
+      })
+      window.addEventListener('blur', () => sendHit(false))
+
+      window.addEventListener('pointerdown', (event) => {
+        // 菜单 / 对话框上有自己的交互，点它们不是拖她
+        if (menuEl && menuEl.contains(event.target)) return
+        if (chatEl && !chatEl.classList.contains('hidden') && chatEl.contains(event.target)) return
+        const wx = event.clientX + origin.x
+        const wy = event.clientY + origin.y
+        // 分身交互：左键拖着走，右键弹「解除」专用菜单（右键在这里就弹，
+        // 不等 contextmenu——透明窗刚从穿透切回来时 contextmenu 可能被吞）
+        if (!inHit(wx, wy)) {
+          const c = cloneAt(wx, wy)
+          if (c) {
+            try { report('clone-act', { kind: event.button === 0 ? 'drag' : 'menu', x: Math.round(wx), y: Math.round(wy), n: clones.length }) } catch { /* ignore */ }
+            if (event.button === 0) {
+              cloneDrag = { c, vx: 0, vy: 0, lt: performance.now(), lx: wx, ly: wy }
+              // 轻点/拎起/甩出/落地的手感与声音全由引擎出（和本体同一套：pointer 系列驱动）
+              try { c.bp.pointer('down', { x: wx, y: wy }) } catch { /* ignore */ }
+              // 借用主进程的拖拽租约：拖动期间透明窗保持不穿透，快了也不丢事件
+              try { desk.drag(true) } catch { /* ignore */ }
+              return
+            }
+            if (event.button === 2 && Date.now() - cloneMenuAt > 350) {
+              cloneMenuAt = Date.now()
+              cloneTarget = c
+              openMenu(wx, wy, 'clone')
+            }
+            return
+          }
+          return
+        }
+        // 只有左键才拖她：右键是菜单，鼠标中键/侧键留给语音快捷键
+        if (event.button !== 0) return
+        dragging = true
+        sendHit(true)
+        try {
+          desk.drag(true)
+        } catch {
+          /* ignore */
+        }
+        try {
+          pet?.pointer?.('down', { x: event.clientX + origin.x, y: event.clientY + origin.y })
+        } catch {
+          /* ignore */
+        }
+      })
+      window.addEventListener('pointermove', (event) => {
+        // 拖分身：跟随交给引擎（bp.pointer('move')），页面只记光标和甩出速度
+        if (cloneDrag) {
+          const wx = event.clientX + origin.x
+          const wy = event.clientY + origin.y
+          const now = performance.now()
+          const mdt = Math.max(8, now - cloneDrag.lt)
+          if (mdt > 24) { cloneDrag.vx = (wx - cloneDrag.lx) / mdt; cloneDrag.vy = (wy - cloneDrag.ly) / mdt; cloneDrag.lt = now; cloneDrag.lx = wx; cloneDrag.ly = wy }
+          try { cloneDrag.c.bp.pointer('move', { x: wx, y: wy }) } catch { /* ignore */ }
+          return
+        }
+        if (!dragging) return
+        try {
+          pet?.pointer?.('move', { x: event.clientX + origin.x, y: event.clientY + origin.y })
+        } catch {
+          /* ignore */
+        }
+      })
+      const endDrag = (event) => {
+        if (cloneDrag) {
+          const c = cloneDrag.c
+          const wx = event.clientX + origin.x
+          const wy = event.clientY + origin.y
+          try { report('clone-drop', { x: Math.round(wx), y: Math.round(wy), throw: Math.round(Math.hypot(cloneDrag.vx, cloneDrag.vy) * 100) / 100 }) } catch { /* ignore */ }
+          // 松手全交给引擎（和本体同一套：轻点=戳一下随表情、慢放=安放不弹、
+          // 快甩=抛出去、摔重了自己晕；声音也由引擎经 host.sound 出）
+          try { c.bp.pointer('up', { x: wx, y: wy }) } catch { /* ignore */ }
+          cloneDrag = null
+          try { desk.drag(false) } catch { /* ignore */ }
+          try { publishBox(true) } catch { /* ignore */ }
+          return
+        }
+        if (!dragging) return
+        dragging = false
+        try {
+          desk.drag(false)
+        } catch {
+          /* ignore */
+        }
+        try {
+          pet?.pointer?.('up', { x: event.clientX + origin.x, y: event.clientY + origin.y })
+        } catch {
+          /* ignore */
+        }
+      }
+      window.addEventListener('pointerup', endDrag)
+      window.addEventListener('pointercancel', endDrag)
+
+      /* 左键：出声 + 晕；右键：菜单；右键双击：输入框 */
+      let rightTap = 0
+      window.addEventListener('click', (event) => {
+        if (!inHit(event.clientX + origin.x, event.clientY + origin.y)) return
+        // 左键点她：换表情 / 小动作（右侧键才是菜单）
+        if (prefs.sfx !== false) chime('poke')
+        try {
+          pet?.act?.('dizzy')
+        } catch {
+          /* ignore */
+        }
+      })
+      window.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        const wx = event.clientX + origin.x
+        const wy = event.clientY + origin.y
+        if (!inHit(wx, wy)) {
+          // 不在本体上：看看是不是点在分身上（pointerdown 里通常已经弹过，去抖防重复）
+          const c = cloneAt(wx, wy)
+          if (c && Date.now() - cloneMenuAt > 350) {
+            cloneMenuAt = Date.now()
+            cloneTarget = c
+            openMenu(wx, wy, 'clone')
+          }
+          return
+        }
+        const now = Date.now()
+        if (now - rightTap < 360) {
+          rightTap = 0
+          openChat()
+          return
+        }
+        rightTap = now
+        openMenu(wx, wy)
+      })
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          closeMenu()
+          closeChat()
+        }
+      })
+
+      /* ---------- 语音快捷键：桌面窗口也认它的组合键 / 鼠标侧键 ---------- */
+      let voiceChat = false // 这次输入框是语音开的：录完自动收走
+      /* 本地语音识别（whisper.cpp，不联网）：
+         浏览器 SpeechRecognition 走 Google 服务，国内网络直接 network 错误（实测），
+         所以改成：她自己的窗口录音（16kHz 单声）→ POST 给插件 → 插件跑本机
+         whisper-cli 转写。录音期间每 3 秒把"已录的全程"转写一次当中间结果，
+         字一句句冒出来；松开后最终转写也只填进输入框——**不自动发送**，
+         master 自己回车或点发送。
+         主窗口麦克风桥的最终结果（voicetext 轮询）仍保留，同样只填不发送。 */
+      let voiceStream = null
+      let lastFinal = { text: '', at: 0 }
+      const VOICE_RATE = 16000
+      const encodeWav = (samples) => {
+        const n = samples.length
+        const buffer = new ArrayBuffer(44 + n * 2)
+        const view = new DataView(buffer)
+        const str = (offset, text) => {
+          for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i))
+        }
+        str(0, 'RIFF')
+        view.setUint32(4, 36 + n * 2, true)
+        str(8, 'WAVEfmt ')
+        view.setUint32(16, 16, true)
+        view.setUint16(20, 1, true)
+        view.setUint16(22, 1, true)
+        view.setUint32(24, VOICE_RATE, true)
+        view.setUint32(28, VOICE_RATE * 2, true)
+        view.setUint16(32, 2, true)
+        view.setUint16(34, 16, true)
+        str(36, 'data')
+        view.setUint32(40, n * 2, true)
+        let offset = 44
+        for (let i = 0; i < n; i += 1) {
+          const v = Math.max(-1, Math.min(1, samples[i]))
+          view.setInt16(offset, v < 0 ? v * 0x8000 : v * 0x7fff, true)
+          offset += 2
+        }
+        return buffer
+      }
+      const mergePcm = (chunks, bytes) => {
+        const merged = new Float32Array(bytes)
+        let offset = 0
+        for (const c of chunks) {
+          merged.set(c, offset)
+          offset += c.length
+        }
+        return merged
+      }
+      const postWav = async (buffer, final) => {
+        try {
+          const res = await fetch(`/dsh-coo-pet/voicerec${final ? '?final=1' : ''}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/octet-stream' },
+            body: buffer,
+          }).then((r) => r.json())
+          return res && res.ok ? String(res.text || '') : ''
+        } catch {
+          return ''
+        }
+      }
+      // 录音期间的中间结果刷新：每 3 秒把已录的全量转写一次（whisper 单进程排队，忙就跳过）
+      let partialTimer = 0
+      const schedulePartialFlush = () => {
+        window.clearInterval(partialTimer)
+        partialTimer = window.setInterval(async () => {
+          const s = voiceStream
+          if (!s || !voiceHeld) return
+          // 一个字节都没录到：录音上下文没在跑（多半是 suspended）——打点实锤
+          if (s.bytes === 0) {
+            if (Date.now() - s.startedAt > 3500 && !s.zeroReported) {
+              s.zeroReported = true
+              report('dbg-voice-noaudio', { ctx: s.ctx.state, sampleRate: s.ctx.sampleRate })
+            }
+            return
+          }
+          if (s.bytes < VOICE_RATE) return
+          const snap = mergePcm(s.chunks, s.bytes)
+          const text = await postWav(encodeWav(snap), false)
+          // 只在还在录音时填中间结果：松手后迟到的响应丢弃，
+          // 最终转写（服务端排队后总会回来）负责填最后一版
+          if (text && voiceHeld && !chatEl.classList.contains('hidden')) chatText.value = text
+        }, 3000)
+      }
+      const stopVoiceCapture = () => {
+        window.clearInterval(partialTimer)
+        partialTimer = 0
+        const s = voiceStream
+        voiceStream = null
+        if (!s) return null
+        try { s.processor.disconnect() } catch { /* ignore */ }
+        try { s.source.disconnect() } catch { /* ignore */ }
+        try { s.ctx.close() } catch { /* ignore */ }
+        try { s.stream.getTracks().forEach((t) => t.stop()) } catch { /* ignore */ }
+        return s.bytes > 0 ? encodeWav(mergePcm(s.chunks, s.bytes)) : null
+      }
+      const startVoiceCapture = () => {
+        if (voiceStream) return
+        if (!navigator.mediaDevices?.getUserMedia) {
+          report('dbg-voice-cap-err', { msg: 'no getUserMedia' })
+          return
+        }
+        navigator.mediaDevices
+          .getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+          .then((stream) => {
+            const ctx = new AudioContext({ sampleRate: VOICE_RATE })
+            // 快捷键经 IPC 触发不算用户手势，ctx 可能是 suspended——主动唤醒，
+            // 唤不醒就打点报出来（录音字节流不会动，表现为「在听但没字」）
+            const wake = ctx.resume().catch(() => {})
+            const source = ctx.createMediaStreamSource(stream)
+            const processor = ctx.createScriptProcessor(4096, 1, 1)
+            const chunks = []
+            let bytes = 0
+            let state = null
+            processor.onaudioprocess = (event) => {
+              if (!state || voiceStream !== state) return
+              const input = event.inputBuffer.getChannelData(0)
+              chunks.push(new Float32Array(input))
+              bytes += input.length
+              // bytes 是闭包变量：state 创建时只复制过一次值（0），必须回写，
+              // 否则所有 s.bytes 检查永远看到 0（表现为「在听但永远没字」）
+              state.bytes = bytes
+            }
+            source.connect(processor)
+            processor.connect(ctx.destination)
+            state = { ctx, source, processor, stream, chunks, bytes, startedAt: Date.now() }
+            voiceStream = state
+            schedulePartialFlush()
+            wake.then(() => {
+              if (voiceStream === state && ctx.state !== 'running') {
+                report('dbg-voice-ctx-stuck', { state: ctx.state, sampleRate: ctx.sampleRate })
+              } else {
+                report('dbg-voice-cap-start', { state: ctx.state, sampleRate: ctx.sampleRate })
+              }
+            })
+          })
+          .catch((error) => {
+            report('dbg-voice-cap-err', { msg: String((error && error.message) || error) })
+          })
+      }
+      const setVoice = (on) => {
+        if (on === voiceHeld) return
+        voiceHeld = on
+        // 开麦时她进入「听」状态（头顶有听声弧线）且原地不动，闭麦恢复；
+        // 录音期间也不搬图标不坐不睡（定时器都有 voiceHeld 闸）
+        chime(on ? 'listenStart' : 'listenEnd')
+        try { pet?.set?.({ listening: on }) } catch { /* ignore */ }
+        try {
+          if (on) {
+            pet?.set?.({ roam: 'off', dialogOpen: true })
+            pet?.stopWalk?.()
+            // 开麦就把她的输入框弹出来（不抢焦点）：识别到的字实时填进去看得到
+            if (chatEl.classList.contains('hidden')) {
+              openChat(false)
+              voiceChat = true
+            }
+            chatText.placeholder = '在听…说话（字会填进来，松开自己发）'
+            startVoiceCapture()
+          } else {
+            // 闭麦：收录音 → 最终转写 → 只把字填进输入框，**不自动发送**，
+            // master 自己回车或点发送
+            ;(async () => {
+              const wav = stopVoiceCapture()
+              if (!wav) {
+                report('dbg-voice-final-empty', { reason: 'no-wav' })
+                return
+              }
+              const ms = Math.round(wav.byteLength / 2 / (VOICE_RATE / 1000))
+              const text = (await postWav(wav, true)).trim()
+              if (!text) {
+                report('dbg-voice-final-empty', { reason: 'no-text', ms })
+                return
+              }
+              lastFinal = { text, at: Date.now() }
+              chatText.value = text
+              voiceChat = false
+            })()
+            chatText.placeholder = '说完啦，回车或点发送'
+            pet?.set?.({ dialogOpen: false })
+            applyRoam()
+            // 闭麦后短时间内没有最终文字（识别失败/空话）就把语音开的输入框收走
+            if (voiceChat) {
+              window.setTimeout(() => {
+                if (voiceChat && !chatText.value.trim()) {
+                  voiceChat = false
+                  closeChat()
+                }
+              }, 2500)
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        fetch('/dsh-coo-pet/voice', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ on }),
+        }).catch(() => {})
+      }
+      const parseHot = (spec) => {
+        const raw = String(spec || '').trim()
+        if (!raw) return null
+        if (/^mouse[345]$/i.test(raw)) return { mouse: Number(raw.slice(5)) }
+        const parts = raw.split('+').map((s) => s.trim()).filter(Boolean)
+        const key = (parts.pop() || '').toLowerCase()
+        const mods = { ctrl: false, alt: false, shift: false, meta: false }
+        for (const p of parts) {
+          const l = p.toLowerCase()
+          if (l === 'ctrl' || l === 'control') mods.ctrl = true
+          else if (l === 'alt') mods.alt = true
+          else if (l === 'shift') mods.shift = true
+          else if (l === 'meta' || l === 'win') mods.meta = true
+        }
+        return { key, mods }
+      }
+      const hotMatch = (event, spec) => {
+        const want = parseHot(spec)
+        if (!want || want.mouse) return false
+        if (String(event.key || '').toLowerCase() !== want.key) return false
+        return (
+          event.ctrlKey === want.mods.ctrl &&
+          event.altKey === want.mods.alt &&
+          event.shiftKey === want.mods.shift &&
+          event.metaKey === want.mods.meta
+        )
+      }
+      window.addEventListener(
+        'keydown',
+        (event) => {
+          if (prefs.hotkeyOn === false) return
+          if (!hotMatch(event, prefs.hotkey)) return
+          event.preventDefault()
+          setVoice(true)
+        },
+        true
+      )
+      window.addEventListener(
+        'keyup',
+        (event) => {
+          if (prefs.hotkeyOn === false) return
+          if (!hotMatch(event, prefs.hotkey)) return
+          event.preventDefault()
+          setVoice(false)
+        },
+        true
+      )
+      const mouseHot = (button) => {
+        const want = parseHot(prefs.hotkey)
+        return !!(want && want.mouse === button)
+      }
+      window.addEventListener(
+        'mousedown',
+        (event) => {
+          if (prefs.hotkeyOn === false) return
+          if (!mouseHot(event.button)) return
+          event.preventDefault()
+          setVoice(true)
+        },
+        true
+      )
+      window.addEventListener(
+        'mouseup',
+        (event) => {
+          if (prefs.hotkeyOn === false) return
+          if (!mouseHot(event.button)) return
+          event.preventDefault()
+          setVoice(false)
+        },
+        true
+      )
+      window.addEventListener('auxclick', (event) => {
+        if (prefs.hotkeyOn !== false && mouseHot(event.button)) event.preventDefault()
+      })
+
+      // 键盘组合键交给主进程做系统级注册后回调（窗口是 focusable:false，收不到键盘）
+      try {
+        desk.hotkey(prefs.hotkey)
+      } catch {
+        /* ignore */
+      }
+      try {
+        desk.onHot((detail) => {
+          if (prefs.hotkeyOn === false) return
+          // 键盘：按一次开麦再按一次收工（无状态）；鼠标：按住说、松开收（down/up）
+          if (detail && detail.state === 'down') setVoice(true)
+          else if (detail && detail.state === 'up') setVoice(false)
+          else setVoice(!voiceHeld)
+        })
+      } catch {
+        /* ignore */
+      }
+
+      /* ---------- 桌面动作：随便坐 / 拖图标 ---------- */
+      let quietSince = Date.now()
+
+      let winCache = { at: 0, data: [] }
+      const windowsOf = async () => {
+        if (Date.now() - winCache.at < 25000) return winCache.data
+        try {
+          const res = await desk.windows()
+          const data = res && res.ok && Array.isArray(res.data) ? res.data : []
+          winCache = { at: Date.now(), data }
+          return data
+        } catch {
+          return []
+        }
+      }
+      let iconCache = { at: 0, data: [] }
+      const iconsOf = async () => {
+        if (Date.now() - iconCache.at < 60000) return iconCache.data
+        try {
+          const res = await desk.icons()
+          const data = res && res.ok && Array.isArray(res.data) ? res.data : []
+          iconCache = { at: Date.now(), data }
+          return data
+        } catch {
+          return []
+        }
+      }
+
+      const sitAt = (x, feetY) => {
+        if (!pet) return
+        seat = Math.max(minFeet(), Math.min(worldSize.h - 20, Math.round(feetY)))
+        try {
+          pet.place?.(Math.round(x), pet.layout?.()?.facing ?? 1, seat)
+        } catch {
+          /* ignore */
+        }
+      }
+      const standUp = () => {
+        if (seat === null) return
+        seat = null
+        try {
+          applyRoam()
+        } catch {
+          /* ignore */
+        }
+      }
+
+      // 界面占用中：菜单或输入框开着时，定时器们不该让她走来走去（坐图标/搬图标/坐下都会把人拉走）
+      const uiBusy = () => !!menuEl || !!(chatEl && !chatEl.classList.contains('hidden'))
+
+      const trySit = async () => {
+        if (!prefs.actSit || offDuty || napping || seat !== null || dragging || busy || stayMode || thinkingNow || voiceHeld || uiBusy() || launchWalk) return
+        if (!pet || seatWalk) return
+        const mode = pet.layout?.()?.mode ?? 'idle'
+        if (!['idle', 'sit', 'sleep', 'look'].includes(mode)) return
+        const roll = Math.random()
+        let spot = null
+        if (roll < 0.5) {
+          const icons = await iconsOf()
+          if (icons.length) {
+            const icon = icons[Math.floor(Math.random() * icons.length)]
+            // 坐在图标上：脚踩在图标图案的上沿（格子约 77×96，图案占中上）
+            spot = { x: icon.x + 38, y: icon.y + 40, line: '这张好坐' }
+          }
+        }
+        if (!spot) {
+          const wins = await windowsOf()
+          const live = wins.filter((w) => w.w > 320 && w.y >= minFeet() && w.y < worldSize.h - 120)
+          if (!live.length) return
+          const target = live[Math.floor(Math.random() * live.length)]
+          spot = { x: target.x + 40 + Math.random() * Math.max(1, target.w - 80), y: target.y, line: '边沿挺舒服的' }
+        }
+        // 不再瞬移：先走到落点，到了再坐；走不了（忙着呢）就这轮放弃
+        const id = 'sit-' + Math.round(Math.random() * 1e6)
+        if (!pet.walkTo?.(spot.x, false, id, spot.y)) return
+        seatWalk = { id, x: spot.x, y: spot.y, line: spot.line }
+      }
+
+      // 桌面干净（只剩壁纸）才允许碰图标：force=真时绕过缓存实查一次（动手前的最后一道闸）
+      let cleanCache = { at: 0, empty: false }
+      const deskClean = async (force) => {
+        if (!force && Date.now() - cleanCache.at < 1200) return cleanCache.empty
+        try {
+          const res = await desk.windows()
+          const data = res && res.ok && Array.isArray(res.data) ? res.data : null
+          if (!data) return false // 探不到窗口就当她别搬
+          cleanCache = { at: Date.now(), empty: data.length === 0 }
+          return cleanCache.empty
+        } catch {
+          return false
+        }
+      }
+
+      // 抱起某个图标：挑一个不压到别的图标的新位置，抱着走过去放下
+      const startCarry = (icon, others) => {
+        if (!pet) return false
+        // 动手前先存一份全部图标位置——「一键复位」就是回到这份快照
+        try { desk.snapshotIcons?.().catch(() => {}) } catch { /* ignore */ }
+        // 在全屏找一块「空地」：离所有其他图标至少 110px、离原位置至少 180px（图标格子约 77×96，中心 ≈ +38/+48）
+        const centers = (others || []).filter((o) => o.i !== icon.i).map((o) => ({ x: o.x + 38, y: o.y + 48 }))
+        const homeX = icon.x + 38
+        const homeY = icon.y + 48
+        let best = null
+        let bestScore = -Infinity
+        for (let k = 0; k < 24; k++) {
+          const tx = 60 + Math.random() * Math.max(1, worldSize.w - 180)
+          const ty = 60 + Math.random() * Math.max(1, window.innerHeight - 200)
+          const clear = centers.reduce((m, o) => Math.min(m, Math.hypot(o.x - (tx + 24), o.y - (ty + 30))), Infinity)
+          const fromHome = Math.hypot(homeX - (tx + 24), homeY - (ty + 30))
+          if (clear >= 110 && fromHome >= 180) {
+            best = { x: tx, y: ty }
+            break
+          }
+          const score = Math.min(clear, fromHome)
+          if (score > bestScore) {
+            bestScore = score
+            best = { x: tx, y: ty }
+          }
+        }
+        if (!best) return false
+        const id2 = 'icon2-' + Math.round(Math.random() * 1e6)
+        // 抱着走到空地正上方，走到哪放到哪（脚下就是落点）
+        if (!pet.walkTo?.(best.x, false, id2, best.y)) return false
+        iconWalk = { id: id2, icon, phase: 2, toX: best.x, toY: best.y }
+        carry = { toX: best.x, toY: best.y }
+        showCarry()
+        say('抱起来咯')
+        return true
+      }
+
+      // 搬运间隔：两次搬图标之间至少隔这么久（设置页可调；0 = 不限制）
+      let lastCarryAt = 0
+      const carryEveryMs = () => {
+        const n = Math.max(0, Math.round(Number(prefs.carryEvery) || 0))
+        return n > 0 ? n * (prefs.carryUnit === 'sec' ? 1000 : 60000) : 0
+      }
+
+      // 巡查：桌面干净时，她走着走着撞到图标，就顺手抱走
+      window.setInterval(async () => {
+        // 搬运途中冒出窗口：立刻放手（真图标要走到落点才真动，放手=图标原地不动）
+        if (iconWalk || carry) {
+          if (!(await deskClean(true))) {
+            iconWalk = null
+            carry = null
+            hideCarry()
+            report('dbg-carry-abort', { why: 'windows-open' })
+          }
+          return
+        }
+        if (!prefs.actIcons || offDuty || napping || prefs.display !== 'desktop' || stayMode || thinkingNow || voiceHeld || uiBusy()) return
+        // 正在去开软件的路上不搬图标：要开的就是那个，别把它抱走、也别打断启动行走
+        if (launchWalk) return
+        // DSH 在跑任务（或有近期活动）时不搬图标：别在她干活时捣乱
+        if (busy || Date.now() - lastActive < 30000) return
+        // 搬运间隔没到就不搬
+        if (Date.now() - lastCarryAt < carryEveryMs()) return
+        if (!pet || dragging || busy || seat !== null || iconWalk || carry) return
+        const mode = pet.layout?.()?.mode
+        if (mode !== 'walk' && mode !== 'run') return
+        if (!(await deskClean())) return
+        const icons = await iconsOf()
+        if (!icons.length) return
+        const me = pet.layout?.()
+        if (!me) return
+        const near = icons.find((ic) => Math.abs(me.x - (ic.x + 38)) < 62 && Math.abs((me.y || 0) - (ic.y + 48)) < 80)
+        if (!near) return
+        // 临动手前再实查一次窗口（不信缓存）：有窗口开着就绝不抱
+        if (!(await deskClean(true))) {
+          report('dbg-carry-skip', { why: 'windows-before-grab' })
+          return
+        }
+        say('这个图标挡路了')
+        if (startCarry(near, icons)) lastCarryAt = Date.now()
+      }, 700)
+
+      // 搬运牌子：一只举在头顶的小包裹（画在宠物 SVG 上层，跟着她走，走路时一颠一颠）
+      const showCarry = () => {
+        try {
+          const svg = stage.querySelector('svg.kit')
+          if (!svg) return
+          if (!carryG) {
+            carryG = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+            carryG.style.pointerEvents = 'none'
+            svg.appendChild(carryG)
+          }
+          carryG.innerHTML =
+            '<rect x="-30" y="-28" width="60" height="46" rx="7" fill="#f7d9a0" stroke="#b8863b" stroke-width="3"/>' +
+            '<line x1="-30" y1="-7" x2="30" y2="-7" stroke="#b8863b" stroke-width="3"/>' +
+            '<line x1="0" y1="-28" x2="0" y2="-7" stroke="#b8863b" stroke-width="3"/>'
+          carryG.style.display = ''
+        } catch {
+          /* ignore */
+        }
+      }
+      const hideCarry = () => {
+        if (carryG) carryG.style.display = 'none'
+      }
+      const updateCarry = () => {
+        if (!carry || !carryG || carryG.style.display === 'none' || !pet) return
+        try {
+          const b = pet.layout?.()
+          if (!b || !b.box) return
+          const bob = Math.round(Math.sin(performance.now() / 180) * 3)
+          const cx = b.box.x + b.box.w / 2
+          const cy = b.box.y - 6
+          carryG.setAttribute('transform', 'translate(' + Math.round(cx) + ',' + Math.round(cy + bob) + ')')
+        } catch {
+          /* ignore */
+        }
+      }
+
+      window.setInterval(() => {
+        if (busy) {
+          quietSince = Date.now()
+          return
+        }
+        if (Date.now() - quietSince < 4000) return
+        trySit()
+        // 坐久了就自己下来
+        if (seat !== null && Math.random() < 0.35) {
+          window.setTimeout(standUp, 6000 + Math.random() * 8000)
+        }
+      }, 9000)
+
+      /* ---------- 每帧推进 ---------- */
+      let last = 0
+      let lastStep = 0
+      let fpsFrames = 0
+      let fpsAt = 0
+      window.__cooFps = 0
+      let frameNo = 0
+      let cloneLast = 0 // 分身自己的时钟：不跟本体降帧（本体睡着/闲着降帧时分身照样顺滑）
+      const step = (time) => {
+        // 全真分身：每只都是完整本体实例，自己 step（AI/物理/渲染全在引擎里）
+        try {
+          const cdt = cloneLast === 0 ? 0.016 : Math.min(0.05, (time - cloneLast) / 1000)
+          cloneLast = time
+          for (const c of clones) c.bp.step(cdt)
+        } catch {
+          /* 安静 */
+        }
+        // rAF 与兜底定时器共用，限到约 30fps，绝不自己再排 rAF（会指数爆炸把电脑卡死）
+        // 按状态自适应帧率：睡觉 6fps、闲着 12fps、走动/拖拽 20fps
+        const modeNow = pet?.layout?.()?.mode || 'idle'
+        // 走动时跟着 rAF 走（60fps），站定才降帧；限帧会弄出 30/60 交替的节奏抖动
+        // 除「真站定」和「睡着」之外一律跟着刷新率走：只有这两档才降帧，其余动作都别限
+        const moving = !(modeNow === 'idle' || modeNow === 'sleep' || modeNow === 'sit')
+        const off = String((prefs && prefs.actOff) || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+        if (
+          off.length > 0 &&
+          off.includes(modeNow) &&
+          modeNow !== 'walk' &&
+          modeNow !== 'run' &&
+          modeNow !== 'air' &&
+          modeNow !== 'drag' &&
+          modeNow !== 'land'
+        ) {
+          try {
+            pet.do('idle')
+          } catch {
+            /* ignore */
+          }
+        }
+        const minGap = moving ? 31 : modeNow === 'sleep' ? 400 : modeNow === 'sit' ? 100 : 120
+        if (time - lastStep < minGap) return
+        // 真正画一帧才计数：给探针用，也方便以后调帧率
+        fpsFrames += 1
+        if (time - fpsAt >= 1000) {
+          window.__cooFps = Math.round((fpsFrames * 1000) / (time - fpsAt))
+          fpsFrames = 0
+          fpsAt = time
+        }
+        lastStep = time
+        const dt = last === 0 ? 0.016 : Math.min(0.05, ( time - last ) / 1000)
+        last = time
+        if (!pet) return
+        const speed = Number(prefs.speed) > 0 ? Number(prefs.speed) : 1
+        try {
+          pet.step(dt * speed, true)
+        } catch {
+          /* 安静 */
+        }
+        try {
+          updateCarry()
+        } catch {
+          /* 安静 */
+        }
+        try {
+          frameNo += 1
+          if (frameNo % 3 !== 0) return
+          const box = pet.layout?.()
+          if (box) {
+            const hits = Array.isArray(box.hit) ? box.hit : []
+            if (hits.length) {
+              let x1 = Infinity
+              let y1 = Infinity
+              let x2 = -Infinity
+              let y2 = -Infinity
+              for (const circle of hits) {
+                x1 = Math.min(x1, circle.x - circle.r)
+                y1 = Math.min(y1, circle.y - circle.r)
+                x2 = Math.max(x2, circle.x + circle.r)
+                y2 = Math.max(y2, circle.y + circle.r)
+              }
+              hit = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+            } else if (box.box) {
+              hit = { x: box.box.x, y: box.box.y, w: box.box.w, h: box.box.h }
+            }
+            bubbleAnchor = {
+              x: Math.min(Math.max(140, hit.x + hit.w / 2), worldSize.w - 140),
+              y: Math.max(70, hit.y - 6),
+            }
+            placeBubble()
+            publishBox(false)
+            publishAnchor(box.box || hit)
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      const loop = (time) => {
+        step(time)
+        window.requestAnimationFrame(loop)
+      }
+      window.requestAnimationFrame(loop)
+      // 被别的全屏窗口盖住时 rAF 会被节流，定时器只做兜底，平时什么都不做
+      window.setInterval(() => {
+        if (performance.now() - lastStep > 220) step(performance.now())
+      }, 120)
+
+      /* ---------- 碎碎念：气泡 + 朗读，间隔按设置来 ---------- */
+      let idleTimer = 0
+      const idleTick = () => {
+        try {
+          if (pet && !dragging && !offDuty && !napping && prefs.idleBubble !== false && prefs.greet !== false && lines.length) {
+            say(lines[Math.floor(Math.random() * lines.length)])
+          }
+        } catch {
+          /* ignore */
+        }
+        idleTimer = window.setTimeout(idleTick, idleMs())
+      }
+      idleTimer = window.setTimeout(idleTick, idleMs())
+
+      /* ---------- 作息感：深夜犯困去睡觉，清早醒来问早安 ---------- */
+      let routinePhase = 'day'
+      {
+        const h0 = new Date().getHours()
+        routinePhase = (h0 >= 23 || h0 < 5) ? 'night' : (h0 < 9) ? 'morning' : 'day'
+        // 开机就在深夜：她已经在睡（不喊晚安，别一上来就出声）
+        if (routinePhase === 'night' && pet) { try { pet?.act?.('sleep') } catch { /* ignore */ } }
+      }
+      window.setInterval(() => {
+        try {
+          // 作息的睡觉不受安静模式限制（睡觉本身就是安静的）；但深夜标记阶段里不重复去睡
+          if (!pet || dragging) return
+          const h = new Date().getHours()
+          if ((h >= 23 || h < 5) && routinePhase !== 'night' && !stayMode) {
+            routinePhase = 'night'
+            chatterSay('好困了…我去睡觉啦，晚安~')
+            try { pet?.act?.('sleep') } catch { /* ignore */ }
+          } else if (h >= 5 && h < 9 && routinePhase === 'night') {
+            routinePhase = 'morning'
+            try { pet?.act?.('wake') } catch { /* ignore */ }
+            chatterSay('早呀！新的一天开始咯~')
+          } else if (h >= 9 && h < 23 && routinePhase !== 'day') {
+            routinePhase = 'day'
+          }
+        } catch { /* ignore */ }
+      }, 60000)
+
+      /* ---------- 被冷落的小情绪：5 分钟没人理她蔫了，一互动就缓过来 ---------- */
+      const GLOOM_MS = 5 * 60 * 1000
+      let lastTouch = Date.now()
+      let gloomSaidAt = 0
+      const noteTouch = () => {
+        lastTouch = Date.now()
+        // 打盹中被打扰：立刻醒来
+        wakeNap()
+        // 刚蔫过不久就互动：立刻开心起来
+        if (Date.now() - gloomSaidAt < 90000 && !offDuty) {
+          try { pet?.setExpr?.('happy') } catch { /* ignore */ }
+        }
+      }
+      for (const ev of ['pointerdown', 'click', 'keydown']) {
+        window.addEventListener(ev, noteTouch, { passive: true })
+      }
+      window.setInterval(() => {
+        try {
+          if (offDuty || !pet || dragging || uiBusy() || busy) return
+          if (stayMode) return
+          if (napping || Date.now() - lastTouch < GLOOM_MS) return
+          if (Date.now() - gloomSaidAt < GLOOM_MS) return
+          gloomSaidAt = Date.now()
+            chatterSay(['咦，大家都去哪儿了呀…', '一个人待着有点冷清呢…', '喂——还在吗？（小声戳戳）'][Math.floor(Math.random() * 3)])
+          try { pet?.setExpr?.(['cry', 'worried', 'pout'][Math.floor(Math.random() * 3)]) } catch { /* ignore */ }
+        } catch { /* ignore */ }
+      }, 60000)
+
+      /* ---------- 平时的小盹儿：白天闲着没事打个盹（作息感保留），一戳/一敲键盘就醒 ---------- */
+      const wakeNap = () => {
+        if (!napping) return
+        napping = false
+        window.clearTimeout(napTimer)
+        napTimer = 0
+        try { pet?.do?.('stand') } catch { /* 引擎被戳醒过就不必再叫 */ }
+        applyRoam()
+      }
+      const startNap = () => {
+        if (napping || !pet || dragging || busy || thinkingNow || voiceHeld || uiBusy() || launchWalk || seat !== null) return
+        napping = true
+        applyRoam()
+        try { pet?.do?.('sleep') } catch { /* ignore */ }
+        // 打盹 18~34 秒自己醒：伸个懒腰犯个困，接着该干嘛干嘛
+        napTimer = window.setTimeout(() => {
+          napTimer = 0
+          napping = false
+          try { pet?.do?.('stand') } catch { /* ignore */ }
+          try { pet?.setExpr?.('sleepy') } catch { /* ignore */ }
+          applyRoam()
+        }, R(18, 34) * 1000)
+      }
+      window.setInterval(() => {
+        try {
+          if (napping || !pet || dragging || busy || thinkingNow || uiBusy() || launchWalk || seat !== null) return
+          if (routinePhase === 'night') return // 夜里有正经觉，白天才打小盹
+          if (Date.now() - lastTouch < 3 * 60 * 1000) return // 刚互动过不睡
+          if (Math.random() > 0.12) return // 闲着每分钟约一成概率犯困
+          startNap()
+        } catch { /* ignore */ }
+      }, 60000)
+
+      /* ---------- 设置页「试一下」：把动作广播到这只 ---------- */
+      let actSeq = 0
+      window.setInterval(async () => {
+        try {
+          const body = await fetch(`/dsh-coo-pet/act?since=${actSeq}`, { credentials: 'same-origin' }).then((res) => res.json())
+          const seq = Number(body && body.seq) || 0
+          if (seq > actSeq) {
+            actSeq = seq
+            const act = body && body.act && body.act.act
+            try { report('act-recv', { seq, act: act || String(body && body.act && body.act.act) }) } catch { /* ignore */ }
+            if (act === 'reset') {
+              restoreIconsAll()
+            } else if (act === 'resetAll') {
+              restoreIconsAllEvery()
+            } else if (act === 'launch') {
+              // 语音说「打开XX」走这里：和打字同一个开软件流程
+              const nm = String((body.act && body.act.name) || '').trim()
+              if (nm) launchTheater(nm)
+            } else if (act === 'spawnClones') {
+              // 远程召唤分身（设置页/调试用）
+              spawnClones(Number((body.act && body.act.name) || '') || 10)
+            } else if (act === 'clearClones') {
+              dismissAllClones()
+            } else if (act === 'cloneFreeze') {
+              // 调试：让全部分身立定不动（再发一次解除）——等同「分身行为›立定不动」
+              cloneFrozen = !cloneFrozen
+              cloneMode = cloneFrozen ? 'frozen' : 'free'
+              applyCloneMode()
+            } else if (act && pet && typeof pet.do === 'function') {
+              pet.do(act)
+              chime(act === 'dance' ? 'dance' : act === 'spin' ? 'spin' : 'select')
+            }
+          }
+        } catch {
+          /* 断线先这样 */
+        }
+      }, 700)
+
+      /* ---------- 插入会话的回答：填了 Session ID 后，回答回流到气泡并朗读 ---------- */
+      let answerSeq = 0
+      window.setInterval(async () => {
+        if (!String((prefs && prefs.attachSession) || '').trim()) return
+        try {
+          const body = await fetch(`/dsh-coo-pet/answer?since=${answerSeq}`, { credentials: 'same-origin' }).then((res) => res.json())
+          const seq = Number(body && body.seq) || 0
+          if (seq > answerSeq) {
+            answerSeq = seq
+            const text = body && body.answer && body.answer.text
+            if (text) answerSay(String(text).slice(0, 600))
+          }
+        } catch {
+          /* 断线先这样 */
+        }
+      }, 900)
+
+      /* ---------- 设置页「试听 / 测试」：把一句话喊出来 ---------- */
+      let saySeq = 0
+      window.setInterval(async () => {
+        try {
+          const body = await fetch(`/dsh-coo-pet/say?since=${saySeq}`, { credentials: 'same-origin' }).then((res) => res.json())
+          const seq = Number(body && body.seq) || 0
+          if (seq <= saySeq) return
+          saySeq = seq
+          const item = body && body.say
+          if (!item || !item.text) return
+          say(item.text)
+        } catch {
+          /* 断线先这样 */
+        }
+      }, 700)
+
+      /* ---------- 语音识别文字：实时填进她的输入框，最终一句也只填不发送 ---------- */
+      let vtSeq = 0
+      window.setInterval(async () => {
+        try {
+          const body = await fetch(`/dsh-coo-pet/voicetext?since=${vtSeq}`, { credentials: 'same-origin' }).then((res) => res.json())
+          const seq = Number(body && body.seq) || 0
+          if (seq <= vtSeq) return
+          vtSeq = seq
+          const item = body && body.text
+          if (!item) return
+          const text = String(item.text || '')
+          if (item.final) {
+            // 最终结果只填框，**不自动发送**（master 自己回车或点发送）
+            if (text.trim()) {
+              if (chatEl.classList.contains('hidden')) {
+                openChat(false)
+                voiceChat = false
+              }
+              chatText.value = text
+            } else {
+              closeChat()
+            }
+          } else {
+            // 中间结果：输入框没开就开（不抢焦点），字边听边往上打
+            if (chatEl.classList.contains('hidden')) openChat(false)
+            chatText.value = text
+          }
+        } catch {
+          /* 断线先这样 */
+        }
+      }, 350)
+
+      /* 设置变化：换配色/衣服/大小就重载，其余即时生效 */
+      let watch = JSON.stringify({ look: prefs.look, outfit: prefs.outfit })
+      let watchSize = String(prefs.size ?? '')
+      let attachLostFor = ''
+      window.setInterval(async () => {
+        try {
+          const body = await fetch('/dsh-coo-pet/prefs', { credentials: 'same-origin' }).then((res) => res.json())
+          const next = body && body.config
+          if (!next) return
+          const hotChanged = next.hotkey !== prefs.hotkey
+          const wanderChanged = next.wander !== prefs.wander
+          const idleKeyBefore = JSON.stringify([prefs.idleLines, prefs.petName])
+          prefs = { ...prefs, ...next }
+          // 碎碎念内容或姓名变了：词表跟着重算（之前只在启动时算一次，改配置她也不换词）
+          if (idleKeyBefore !== JSON.stringify([prefs.idleLines, prefs.petName])) {
+            lines = splitLines(prefs.idleLines)
+          }
+          if (hotChanged) {
+            try {
+              desk.hotkey(prefs.hotkey)
+            } catch {
+              /* ignore */
+            }
+          }
+          // 溜达开关变了立即应用；值没变不动（避免干扰气泡/思考时的临时 roam 状态）
+          if (wanderChanged) applyRoam()
+          // busy / lastActiveAt 在响应顶层（不在 config 里），从 body 读——之前误从 config 读，
+          // busy 永远是 false，「干活别搬图标 / 别乱走」的拦截从来没生效过
+          lastActive = Number(body.lastActiveAt || 0)
+          const nowBusy = body.busy === true
+          if (nowBusy !== busy) {
+            busy = nowBusy
+            if (busy) {
+              // DSH 开始干活（思考/执行工具）：原地站住别溜达，手里的搬运就地放下
+              thinkingNow = true
+              try { pet?.set?.({ thinking: true, roam: 'off' }) } catch { /* ignore */ }
+              if (!launchWalk && !seatWalk) { try { pet?.stopWalk?.() } catch { /* ignore */ } }
+              if (iconWalk || carry) { iconWalk = null; carry = null; hideCarry() }
+            } else {
+              // 干完活了，恢复平时的活动状态（回答气泡还挂着就先别动，等气泡收掉再放行）
+              thinkingNow = false
+              try { pet?.set?.({ thinking: false }) } catch { /* ignore */ }
+              window.clearTimeout(thinkTimer)
+              if (bubbleEl && !bubbleEl.classList.contains('on')) applyRoam()
+            }
+          }
+          // 插入会话状态：确认跟丢了只喊一次（同一个会话 ID 不重复喊，避免状态抖动刷屏）
+          const attach = body.attach
+          if (attach && attach.id) {
+            if (attach.ok === false && attachLostFor !== attach.id) {
+              attachLostFor = attach.id
+              say('插入的会话好像跟丢了，去设置里看看 Session ID 吧')
+            }
+          } else {
+            attachLostFor = ''
+          }
+          // 体型变了才整页重载；形象 / 衣服变了走原地无缝换肤（不闪不跳，动作不打断）
+          const now = JSON.stringify({ look: prefs.look, outfit: prefs.outfit })
+          if (now !== watch) {
+            watch = now
+            try {
+              pet?.setScheme?.(`${prefs.look || 'deepseek'}-${prefs.outfit || 'maid'}`, { fade: 0.6 })
+            } catch {
+              /* ignore */
+            }
+          }
+          const sz = String(prefs.size ?? '')
+          if (sz !== watchSize) {
+            watchSize = sz
+            window.location.reload()
+            return
+          }
+          if (prefs.display === 'none') desk.close()
+          stage.style.opacity = String(prefs.opacity ?? 1)
+          lines = splitLines(prefs.idleLines)
+        } catch {
+          /* 断线先这样 */
+        }
+      }, 3000)
+    </script>
+  </body>
+</html>

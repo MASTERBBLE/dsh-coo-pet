@@ -1,0 +1,41 @@
+{
+  "name": "@masterbble/dsh-coo-pet",
+  "version": "0.6.29",
+  "license": "AGPL-3.0-or-later",
+  "author": "Masterbble",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MASTERBBLE/dsh-coo-pet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MASTERBBLE/dsh-coo-pet/issues"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "description": "Your Fish: an animated companion living on your desktop. Walks, naps, tidies your desktop icons and chats through DSH sessions. Based on Pal-AI-Lab/Coopanion.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "assets"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

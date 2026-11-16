@@ -1,0 +1,21 @@
+# 运行数据（每台电脑自动生成，不进仓库）
+settings.json
+# 鲸鱼贴图已获原作者许可随仓库分发（见 THIRD_PARTY_NOTICES.md）
+assets/icon-snapshot.json
+assets/icon-snapshots/
+assets/shots/
+shots/
+probe.log
+desk.out.txt
+desk.err.txt
+_deskblock.txt
+.trash-bak/
+node_modules/
+*.log
+*.bak-*
+*.tmp-*
+assets/patch-archive/
+# 开发期一次性脚本，不进仓库（本地保留）
+assets/build-slim.mjs
+assets/patch-slim-fix.mjs
+assets/pet/test.html
