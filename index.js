@@ -34,7 +34,9 @@ function deriveHome() {
   return parent
 }
 const HOME = process.env.DSH_HOME ?? deriveHome()
-const SETTINGS_FILE = join(HOME, 'coo-pet', 'settings.json')
+const PLUGIN_DIR = normalizePath(fileURLToPath(new URL('..', import.meta.url)))
+const LEGACY_SETTINGS_FILE = join(HOME, 'coo-pet', 'settings.json')
+const SETTINGS_FILE = join(PLUGIN_DIR, 'settings.json')
 const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
 const PET_ROOT = fileURLToPath(new URL('./assets/pet/', import.meta.url))
 
@@ -229,12 +231,18 @@ function clip(text, limit) {
   return `${flat.slice(0, limit)}…`
 }
 
-function sendJson(res, code, body) {
+function sendJson(req, res, code, body) {
   res.statusCode = code
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
-  // DSH 渲染页（dsh-app://app）用绝对地址轮询时是跨源，没有这个头会被 CORS 拦掉
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  // 只允许受信任的本地 / DSH 渲染页跨源访问，避免任意网页读取状态或改动设置
+  const origin = req?.headers?.origin
+  if (origin && /^(?:https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?|dsh-app:\/\/app)$/i.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  }
   res.end(JSON.stringify(body))
 }
 
@@ -553,6 +561,7 @@ export function apply(ctx, config = {}) {
   const reports = {}
 
   readFile(SETTINGS_FILE, 'utf8')
+    .catch(() => readFile(LEGACY_SETTINGS_FILE, 'utf8'))
     .then((text) => {
       const raw = JSON.parse(text)
       const next = normalize({ ...settings, ...raw })
@@ -620,7 +629,7 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         const url = new URL(req.url ?? '/dsh-coo-pet/pulse', 'http://localhost')
         const since = Number(url.searchParams.get('since') ?? '0')
-        sendJson(res, 200, {
+        sendJson(req, res, 200, {
           ok: true,
           changed: state.seq !== since,
           seq: state.seq,
@@ -666,14 +675,14 @@ export function apply(ctx, config = {}) {
             state.seq += 1
             state.updatedAt = Date.now()
             syncDesk(settings.display)
-sendJson(res, 200, describe(req))
+sendJson(req, res, 200, describe(req))
           } catch (error) {
-            sendJson(res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
+            sendJson(req, res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
           }
           return
         }
         lastHost = req.headers.host ?? lastHost
-        sendJson(res, 200, describe(req))
+        sendJson(req, res, 200, describe(req))
       },
     })
   )
@@ -683,7 +692,7 @@ sendJson(res, 200, describe(req))
       kind: 'exact',
       path: '/dsh-coo-pet/config',
       handler: async (req, res) => {
-        sendJson(res, 200, describe(req))
+        sendJson(req, res, 200, describe(req))
       },
     })
   )
@@ -694,38 +703,20 @@ sendJson(res, 200, describe(req))
       path: '/dsh-coo-pet/bubble',
       handler: async (req, res) => {
         if (req.method !== 'POST') {
-          sendJson(res, 405, { ok: false, error: 'POST only' })
+          sendJson(req, res, 405, { ok: false, error: 'POST only' })
           return
         }
         try {
           const body = JSON.parse((await readBody(req)) || '{}')
           const text = typeof body.text === 'string' ? body.text.trim() : ''
           if (text === '') {
-            sendJson(res, 400, { ok: false, error: 'text 必填' })
+            sendJson(req, res, 400, { ok: false, error: 'text 必填' })
             return
           }
           bump({ mood: typeof body.mood === 'string' ? body.mood : 'happy', bubble: { text: clip(text, 90), at: Date.now() } })
-          sendJson(res, 200, { ok: true })
+          sendJson(req, res, 200, { ok: true })
         } catch (error) {
-          sendJson(res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
-        }
-      },
-    })
-  )
-
-  disposers.push(
-    safeRegister({
-      kind: 'exact',
-      path: '/dsh-coo-pet/test',
-      handler: async (req, res) => {
-        res.setHeader('Content-Type', 'text/html; charset=utf-8')
-        res.setHeader('Cache-Control', 'no-store')
-        try {
-          const html = await readFile(join(PET_ROOT, 'test.html'), 'utf8')
-          res.end(html)
-        } catch (error) {
-          res.statusCode = 404
-          res.end(`test.html missing: ${String(error)}`)
+          sendJson(req, res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
         }
       },
     })
@@ -735,14 +726,14 @@ sendJson(res, 200, describe(req))
     safeRegister({
       kind: 'exact',
       path: '/dsh-coo-pet/build',
-      handler: async (_req, res) => {
+      handler: async (req, res) => {
         let version = VERSION
         try {
           version = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
         } catch {
           /* 读不到就用启动时那份 */
         }
-        sendJson(res, 200, { ok: true, version })
+        sendJson(req, res, 200, { ok: true, version })
       },
     })
   )
@@ -772,10 +763,10 @@ sendJson(res, 200, describe(req))
           } catch {
             report = { status: 'error', message: 'bad json', at: Date.now() }
           }
-          sendJson(res, 200, { ok: true })
+          sendJson(req, res, 200, { ok: true })
           return
         }
-        sendJson(res, 200, { ok: true, report, reports, lastSay, config: settings })
+        sendJson(req, res, 200, { ok: true, report, reports })
       },
     })
   )
@@ -791,22 +782,22 @@ sendJson(res, 200, describe(req))
           try {
             body = JSON.parse((await readBody(req)) || '{}')
           } catch {
-            sendJson(res, 400, { ok: false, error: 'bad json' })
+            sendJson(req, res, 400, { ok: false, error: 'bad json' })
             return
           }
           const act = String(body.act ?? '').trim().slice(0, 24)
           if (!act) {
-            sendJson(res, 400, { ok: false, error: 'empty' })
+            sendJson(req, res, 400, { ok: false, error: 'empty' })
             return
           }
           actSeq += 1
           // launch 带名字：语音「打开XX」经 act 队列传给桌面的那只
           actLast = { seq: actSeq, act, name: String(body.name ?? '').trim().slice(0, 60), at: Date.now() }
-          sendJson(res, 200, { ok: true, seq: actSeq })
+          sendJson(req, res, 200, { ok: true, seq: actSeq })
           return
         }
         const since = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('since') ?? 0) || 0
-        sendJson(res, 200, { ok: true, seq: actSeq, act: actSeq > since ? actLast : null })
+        sendJson(req, res, 200, { ok: true, seq: actSeq, act: actSeq > since ? actLast : null })
       },
     })
   )
@@ -822,22 +813,22 @@ sendJson(res, 200, describe(req))
           try {
             body = JSON.parse((await readBody(req)) || '{}')
           } catch {
-            sendJson(res, 400, { ok: false, error: 'bad json' })
+            sendJson(req, res, 400, { ok: false, error: 'bad json' })
             return
           }
           const text = String(body.text ?? '').trim().slice(0, 200)
           const mode = body.mode === 'tts' ? 'tts' : body.mode === 'babble' ? 'babble' : ''
           if (!text) {
-            sendJson(res, 400, { ok: false, error: 'empty' })
+            sendJson(req, res, 400, { ok: false, error: 'empty' })
             return
           }
           saySeq += 1
           sayLast = { seq: saySeq, text, mode, at: Date.now() }
-          sendJson(res, 200, { ok: true, seq: saySeq })
+          sendJson(req, res, 200, { ok: true, seq: saySeq })
           return
         }
         const since = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('since') ?? 0) || 0
-        sendJson(res, 200, { ok: true, seq: saySeq, say: saySeq > since ? sayLast : null })
+        sendJson(req, res, 200, { ok: true, seq: saySeq, say: saySeq > since ? sayLast : null })
       },
     })
   )
@@ -853,16 +844,16 @@ sendJson(res, 200, describe(req))
           try {
             body = JSON.parse((await readBody(req)) || '{}')
           } catch {
-            sendJson(res, 400, { ok: false, error: 'bad json' })
+            sendJson(req, res, 400, { ok: false, error: 'bad json' })
             return
           }
           voiceSeq += 1
           voiceLast = { seq: voiceSeq, on: body.on === true, at: Date.now() }
-          sendJson(res, 200, { ok: true, seq: voiceSeq })
+          sendJson(req, res, 200, { ok: true, seq: voiceSeq })
           return
         }
         const since = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('since') ?? 0) || 0
-        sendJson(res, 200, { ok: true, seq: voiceSeq, voice: voiceSeq > since ? voiceLast : null })
+        sendJson(req, res, 200, { ok: true, seq: voiceSeq, voice: voiceSeq > since ? voiceLast : null })
       },
     })
   )
@@ -882,14 +873,14 @@ sendJson(res, 200, describe(req))
             const text = String(body.text ?? '').slice(0, 2000)
             voiceTextSeq += 1
             voiceTextLast = { seq: voiceTextSeq, text, final: body.final === true, at: Date.now() }
-            sendJson(res, 200, { ok: true, seq: voiceTextSeq })
+            sendJson(req, res, 200, { ok: true, seq: voiceTextSeq })
           } catch (error) {
-            sendJson(res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
+            sendJson(req, res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
           }
           return
         }
         const since = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('since') ?? 0) || 0
-        sendJson(res, 200, { ok: true, seq: voiceTextSeq, text: voiceTextSeq > since ? voiceTextLast : null })
+        sendJson(req, res, 200, { ok: true, seq: voiceTextSeq, text: voiceTextSeq > since ? voiceTextLast : null })
       },
     })
   )
@@ -946,20 +937,20 @@ sendJson(res, 200, describe(req))
       path: '/dsh-coo-pet/voicerec',
       handler: async (req, res) => {
         if (req.method !== 'POST') {
-          sendJson(res, 405, { ok: false, error: 'POST only' })
+          sendJson(req, res, 405, { ok: false, error: 'POST only' })
           return
         }
         const isFinal = new URL(req.url ?? '/', 'http://x').searchParams.get('final') === '1'
         try {
           const wav = await readBodyRaw(req)
           if (!wav || wav.length < 2000) {
-            sendJson(res, 200, { ok: false, error: 'empty' })
+            sendJson(req, res, 200, { ok: false, error: 'empty' })
             return
           }
           const r = await runWhisperQueued(wav)
-          sendJson(res, 200, { ok: r.ok, text: r.text ?? '', error: r.error, final: isFinal })
+          sendJson(req, res, 200, { ok: r.ok, text: r.text ?? '', error: r.error, final: isFinal })
         } catch (error) {
-          sendJson(res, 500, { ok: false, error: String((error && error.message) || error) })
+          sendJson(req, res, 500, { ok: false, error: String((error && error.message) || error) })
         }
       },
     })
@@ -995,7 +986,7 @@ sendJson(res, 200, describe(req))
         } catch {
           /* 列表拿不到就算了，返回空 */
         }
-        sendJson(res, 200, { ok: true, used, sessions: out })
+        sendJson(req, res, 200, { ok: true, used, sessions: out })
       },
     })
   )
@@ -1007,7 +998,7 @@ sendJson(res, 200, describe(req))
       path: '/dsh-coo-pet/answer',
       handler: async (req, res) => {
         const since = Number(new URL(req.url ?? '/', 'http://x').searchParams.get('since') ?? 0) || 0
-        sendJson(res, 200, { ok: true, seq: answerSeq, answer: answerSeq > since ? answerLast : null })
+        sendJson(req, res, 200, { ok: true, seq: answerSeq, answer: answerSeq > since ? answerLast : null })
       },
     })
   )
@@ -1019,30 +1010,30 @@ sendJson(res, 200, describe(req))
       path: '/dsh-coo-pet/prompt',
       handler: async (req, res) => {
         if (req.method !== 'POST') {
-          sendJson(res, 405, { ok: false, error: 'method' })
+          sendJson(req, res, 405, { ok: false, error: 'method' })
           return
         }
         let body = {}
         try {
           body = JSON.parse((await readBody(req)) || '{}')
         } catch {
-          sendJson(res, 400, { ok: false, error: 'bad json' })
+          sendJson(req, res, 400, { ok: false, error: 'bad json' })
           return
         }
         const text = String(body.text ?? '').trim().slice(0, 4000)
         const sessionId = String(body.sessionId ?? '').trim()
         // 只认绑定的会话：填了谁就问谁，不填不说话——绝不猜会话（猜到 IM 专属会话会把回答桥接发走）
         if (!sessionId) {
-          sendJson(res, 400, { ok: false, error: '未绑定会话：先在设置里填 Session ID' })
+          sendJson(req, res, 400, { ok: false, error: '未绑定会话：先在设置里填 Session ID' })
           return
         }
         if (!text) {
-          sendJson(res, 400, { ok: false, error: 'empty' })
+          sendJson(req, res, 400, { ok: false, error: 'empty' })
           return
         }
         const controller = ctx.get('sessionController')
         if (!controller) {
-          sendJson(res, 503, { ok: false, error: 'sessionController 不可用' })
+          sendJson(req, res, 503, { ok: false, error: 'sessionController 不可用' })
           return
         }
         try {
@@ -1081,7 +1072,7 @@ sendJson(res, 200, describe(req))
             attachState.ok = true
             attachState.checkedAt = Date.now()
           }
-          sendJson(res, 200, { ok: true })
+          sendJson(req, res, 200, { ok: true })
         } catch (error) {
           const message = String(error && error.message ? error.message : error)
           lastSay = { text, sessionId, at: Date.now(), ok: false, message }
@@ -1089,13 +1080,13 @@ sendJson(res, 200, describe(req))
             attachState.ok = false
             attachState.checkedAt = Date.now()
           }
-          sendJson(res, 502, { ok: false, error: message })
+          sendJson(req, res, 502, { ok: false, error: message })
         }
       },
     })
   )
 
-  const servePetFile = async (res, relative) => {
+  const servePetFile = async (req, res, relative) => {
     const safe = normalizePath(relative).replace(/^([.][.][/\\])+/, '')
     const abs = join(PET_ROOT, safe)
     if (!abs.startsWith(PET_ROOT)) {
@@ -1109,7 +1100,11 @@ sendJson(res, 200, describe(req))
       const data = await readFile(abs)
       res.setHeader('Content-Type', MIME[extname(abs).toLowerCase()] ?? 'application/octet-stream')
       res.setHeader('Cache-Control', 'no-store')
-      res.setHeader('Access-Control-Allow-Origin', '*')
+      const origin = req?.headers?.origin
+      if (origin && /^(?:https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?|dsh-app:\/\/app)$/i.test(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Vary', 'Origin')
+      }
       res.end(data)
     } catch (error) {
       res.statusCode = 404
@@ -1123,7 +1118,7 @@ sendJson(res, 200, describe(req))
       safeRegister({
         kind: 'exact',
         path: `/dsh-coo-pet/pet/${rel}`,
-        handler: async (req, res) => servePetFile(res, rel),
+        handler: async (req, res) => servePetFile(req, res, rel),
       })
     )
   }
@@ -1140,7 +1135,7 @@ sendJson(res, 200, describe(req))
           res.end('missing p')
           return
         }
-        await servePetFile(res, rel)
+        await servePetFile(req, res, rel)
       },
     })
   )
@@ -1217,7 +1212,7 @@ const ELECTRON_CANDIDATES = [
       path: '/dsh-coo-pet/open',
       handler: async (req, res) => {
         if (req.method !== 'POST') {
-          sendJson(res, 405, { ok: false, error: 'POST only' })
+          sendJson(req, res, 405, { ok: false, error: 'POST only' })
           return
         }
         let target = ''
@@ -1241,17 +1236,17 @@ const ELECTRON_CANDIDATES = [
             if (!exe || !existsSync(exe)) throw new Error('没找到 DSH（DeepSeek Harness），可用环境变量 DSH_EXE 指定')
             launch(exe)
           } else if (target === 'folder') {
-            launch('explorer.exe', [HOME.replace(/\//g, '\\') + '\\coo-pet'])
+            launch('explorer.exe', [PLUGIN_DIR])
           } else if (target === 'desktop') {
             spawnDesk()
           } else if (target === 'settings') {
-            launch('explorer.exe', [HOME.replace(/\//g, '\\') + '\\coo-pet\\settings.json'])
+            launch('explorer.exe', [SETTINGS_FILE])
           } else {
             throw new Error(`不认识的 target：${target}`)
           }
-          sendJson(res, 200, { ok: true })
+          sendJson(req, res, 200, { ok: true })
         } catch (error) {
-          sendJson(res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
+          sendJson(req, res, 400, { ok: false, error: String(error && error.message ? error.message : error) })
         }
       },
     })
